@@ -3,9 +3,9 @@
 
 use sea_orm::{
     ColumnTrait, DatabaseConnection, DbBackend, DeleteResult, EntityTrait, QueryFilter,
-    SqlxPostgresConnector,
+    SqlxMySqlConnector,
 };
-use sqlx::postgres::PgPoolOptions;
+use sqlx::mysql::MySqlPoolOptions;
 
 use crate::{cfg::Configuration, core::types::OrganizationId};
 
@@ -14,21 +14,22 @@ use models::{application, endpoint, eventtype, message, messageattempt, messaged
 
 static MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!();
 
-async fn connect(dsn: &str, max_pool_size: u16) -> sqlx::Pool<sqlx::Postgres> {
+
+async fn connect(dsn: &str, max_pool_size: u16) -> sqlx::Pool<sqlx::MySql> {
     tracing::debug!("DB: Initializing pool");
-    if DbBackend::Postgres.is_prefix_of(dsn) {
-        PgPoolOptions::new()
+    if DbBackend::MySql.is_prefix_of(dsn) {
+        MySqlPoolOptions::new()
             .max_connections(max_pool_size.into())
             .connect(dsn)
             .await
-            .expect("Error connectiong to Postgres")
+            .expect("Error connectiong to MySql")
     } else {
         panic!("db_dsn format not recognized. {dsn}")
     }
 }
 
 pub async fn init_db(cfg: &Configuration) -> DatabaseConnection {
-    SqlxPostgresConnector::from_sqlx_postgres_pool(connect(&cfg.db_dsn, cfg.db_pool_max_size).await)
+    SqlxMySqlConnector::from_sqlx_mysql_pool(connect(&cfg.db_dsn, cfg.db_pool_max_size).await)
 }
 
 pub async fn run_migrations(cfg: &Configuration) {

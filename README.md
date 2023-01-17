@@ -196,6 +196,8 @@ jwt_secret = "8KjzRXrKkd9YFcNyqLSIY8JwiaCeRc6WK4UkMnSW"
 # The DSN for the database. Only postgres is currently supported.
 db_dsn = "postgresql://postgres:postgres@pgbouncer/postgres"
 
+<username>:<password>@<db-url>:<port>/<db-name>
+
 # The DSN for redis (can be left empty if not using redis)
 redis_dsn = "redis://redis:6379"
 
