@@ -1,18 +1,27 @@
 name: Python Lint
-on: 
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "python/**"
+      - "lib-openapi.json"
+      - ".github/workflows/python-lint.yml"
   pull_request:
     paths:
       - "python/**"
+      - "lib-openapi.json"
+      - ".github/workflows/python-lint.yml"
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v2
+      - uses: actions/setup-python@v5
         name: Install Python
         with:
-          python-version: '3.9'
+          python-version: '3.11'
 
       - name: Install deps
         run: |
@@ -20,11 +29,6 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r requirements.txt .
           python -m pip install -r requirements-dev.txt .
-
-      - name: Regen openapi libs
-        run: |
-          cd python
-          ./scripts/generate_openapi.sh
 
       - name: Run linting
         run: |

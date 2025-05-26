@@ -1,25 +1,32 @@
-name: Javascript Release
+name: JavaScript Release
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+    paths:
+      - 'lib-openapi.json'
+      - 'javascript/**'
+      - '.github/workflows/javascript-release.yml'
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Mega Releaser
+    types:
+      - completed
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    environment: release
+
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - uses: actions/setup-node@v2
+      - uses: actions/setup-node@v4
         with:
-          node-version: '14.x'
+          node-version: 'latest'
           registry-url: 'https://registry.npmjs.org'
-
-      - name: Regen openapi libs
-        run: |
-          yarn
-          ./regen_openapi.sh
 
       - name: Install modules
         run: |
@@ -27,6 +34,7 @@ jobs:
           yarn
 
       - name: Publish
+        if: ${{ github.ref_type == 'tag' || startsWith(github.event.workflow_run.head_branch,'v') }}
         run: |
           cd javascript
           yarn publish

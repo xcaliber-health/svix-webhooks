@@ -1,17 +1,18 @@
 // SPDX-FileCopyrightText: © 2022 Svix Authors
 // SPDX-License-Identifier: MIT
 
-use crate::core::types::{
-    ApplicationId, BaseId, EndpointHeaders, EndpointId, EndpointIdOrUid, EndpointSecretInternal,
-    EndpointUid, EventChannelSet, EventTypeNameSet, ExpiringSigningKeys,
-};
-use crate::{ctx, error};
 use chrono::Utc;
-use sea_orm::ActiveValue::Set;
-use sea_orm::{entity::prelude::*, Condition};
-use sea_orm::{ConnectionTrait, IntoActiveModel};
+use sea_orm::{entity::prelude::*, ActiveValue::Set, Condition, IntoActiveModel};
 
 use super::endpointmetadata;
+use crate::{
+    core::types::{
+        ApplicationId, BaseId, EndpointHeaders, EndpointId, EndpointIdOrUid,
+        EndpointSecretInternal, EndpointUid, EventChannelSet, EventTypeNameSet,
+        ExpiringSigningKeys,
+    },
+    error,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "endpoint")]
@@ -70,8 +71,12 @@ impl Related<super::endpointmetadata::Entity> for Entity {
     }
 }
 
+#[axum::async_trait]
 impl ActiveModelBehavior for ActiveModel {
-    fn before_save(mut self, _insert: bool) -> Result<Self, DbErr> {
+    async fn before_save<C>(mut self, _db: &C, _insert: bool) -> Result<Self, DbErr>
+    where
+        C: ConnectionTrait,
+    {
         self.updated_at = Set(Utc::now().into());
         Ok(self)
     }
@@ -96,14 +101,12 @@ impl ActiveModel {
         app_id: ApplicationId,
         endp_id: EndpointIdOrUid,
     ) -> error::Result<Option<(Self, endpointmetadata::ActiveModel)>> {
-        let (endp, metadata) = match ctx!(
-            Entity::secure_find_by_id_or_uid(app_id, endp_id)
-                .find_also_related(endpointmetadata::Entity)
-                .one(db)
-                .await
-        )? {
-            Some(models) => models,
-            None => return Ok(None),
+        let Some((endp, metadata)) = Entity::secure_find_by_id_or_uid(app_id, endp_id)
+            .find_also_related(endpointmetadata::Entity)
+            .one(db)
+            .await?
+        else {
+            return Ok(None);
         };
 
         let metadata = metadata

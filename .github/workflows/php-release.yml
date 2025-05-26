@@ -1,14 +1,18 @@
 name: PHP Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Mega Releaser
+    types:
+      - completed
 
 jobs:
   packagist:
     name: Update Packagist
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    environment: release
 
     steps:
       - name: Update Packagist

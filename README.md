@@ -14,6 +14,10 @@
 [![Twitter Follow](https://img.shields.io/twitter/follow/SvixHQ?style=social)](https://twitter.com/SvixHQ)
 [![Join our slack](https://img.shields.io/badge/Slack-join%20the%20community-blue?logo=slack&style=social)](https://www.svix.com/slack/)
 
+[![Docker Pulls](https://img.shields.io/docker/pulls/svix/svix-server?logo=docker)](https://hub.docker.com/r/svix/svix-server/)
+[![NPM Downloads](https://img.shields.io/npm/dm/svix?logo=npm)](https://www.npmjs.com/package/svix)
+[![Pypi Downloads](https://img.shields.io/pypi/dm/svix?logo=pypi)](https://pypi.org/project/svix/)
+
 ## Svix is the enterprise ready webhook service
 
 Svix makes it easy for developers to send webhooks. Developers make one API call, and Svix takes care of deliverability, retries, security, and more. For more information, please refer to the [Svix homepage](https://www.svix.com).
@@ -135,17 +139,17 @@ Please refer to the [server configuration](#server-configuration) section below 
 
 You can use the official Svix Docker image from [Docker Hub](https://hub.docker.com/r/svix/svix-server). You can either use the `latest` tag, or one of [the versioned tags](https://hub.docker.com/r/svix/svix-server/tags) instead.
 
-You can either use the example [docker-compose.yml](./server/docker-compose.yml) file with `docker-compose` (easiest), `docker swarm` (advanced), or run the container standalone.
+You can either use the example [docker-compose.yml](./server/docker-compose.yml) file with `docker compose` (easiest), `docker swarm` (advanced), or run the container standalone.
 
 #### With Docker Compose
 
 This alternative is the easiest because it will also boot up and configure `redis` and `postgresql`.
 
-This assumes you have docker-compose installed.
+This assumes you have Docker Compose v2 installed.
 
 ```
 cd server
-docker-compose up
+docker compose up
 ```
 
 #### Standalone container
@@ -176,7 +180,14 @@ If you already have one, you just need to run `cargo build`, otherwise, please p
 The server requires the following runtime dependencies to work correctly:
 
 - A PostgreSQL server - for the storage of events.
-- An *optional* Redis server version 6.2.0 or higher - for the task queue and cache. Please note that it's recommended to enable persistence in Redis so that tasks are persisted across Redis server restarts and upgrades.
+- An *optional* Redis server version 6.2.0 or higher - for the task queue and cache.
+
+## Redis/Valkey Considerations
+### Persistence
+Please note that it's recommended to enable persistence in Redis so that tasks are persisted across Redis server restarts and upgrades.
+
+### Eviction Policy
+Please ensure that your Redis instances are configured to not evict keys without explicit `expire` policies set. This means that `maxmemory-policy` should be set to `noeviction` or to any of the available `volatile-` policies. See Redis/Valkey documentation for further information.
 
 ## Server configuration
 
@@ -234,10 +245,12 @@ You can see more in [these instructions](./OpenTelemetry.md).
 
 ### Connection Pool Size
 
-There are two configuration variables `db_pool_max_size` and `redis_pool_max_size` which control the maximum allowed size of the connection pool for PostgreSQL and Redis respectively.
+The `db_pool_max_size` configuration parameter controls the maximum allowed size of the connection pool for PostgreSQL. This value defaults to a max size of 100, but you can potentially increase application performance significantly by increasing this value. You may need to consider Postgres and PGBouncer configuration parameters as well when tuning these parameters.
 
-They default to a max size of 20, but higher values can significantly increase performance if your database can handle it.
+The `redis_pool_max_size` parameter controls the maximum size of each Svix instance's Redis connection pool. Its default is 100. Note that only redis _queuing_ leverages connection pooling -- caching is fully asynchronous and so does not otherwise benefit from pooling. Therefore, you probably won't need to tune this parameter.
 
+### SSRF Attacks and Internal IP Addresses
+To prevent SSRF attacks, message dispatches to internal IP addresses are blocked by default. However we understand that this doesn't meet the needs of every user say, for example, the service can only be accessed internally. To bypass these restrictions, see the `whitelist_subnets` configuration option, which accepts an array of CIDR-notation subnets to allow messages to be dispatched to.
 
 ### Webhook signature scheme (symmetric vs asymmetric)
 
@@ -280,15 +293,60 @@ Example valid JWT for the secret `x` (so you can see the structure):
 }
 ```
 
+### Using a different signing algorithm
+
+As mentioned above, the default algorithm for signing JWTs is `HS256`. You can select a different algorithm by setting the `jwt_algorithm` config to one of these supported values: `HS384`, `HS512`, `RS256`, `RS384`, `RS512`, or `EdDSA`.
+
 ## Operational (incoming) webhooks
 
 Operational webhooks are webhooks that you can subscribe to in order to get notified of important events occurring on the svix-server. The list of supported events is available in [the webhooks section of the API reference](https://api.svix.com/docs#tag/Webhooks).
 
-The operational webhooks utilize Svix, and are controlled by a special account with the following ID: `org_00000000000SvixManagement00`.
-To turn operational webhooks on, set the `operational_webhook_address` config to point to your Svix server, and create a JWT for the special account.
-Once those are set, create an `Application` with the `uid` set to the `org_id` you're interested in, and add `Endpoint`s for all of the events you'd like to subscribe to.
+The operational webhooks utilize Svix, and are controlled by a special account service account with the following ID: `org_00000000000SvixManagement00`.
 
-For example, for the default account, just create an app with the `uid` set to `org_23rb8YdGqMT0qIzpgGwdXfHirMu`.
+The first step is to turn it on by setting the `operational_webhook_address` config to point to your Svix server. The most common value for this setting is `http://127.0.0.1:8071`, though it may be different based on your specific setup.
+
+The above step enables operational webhooks on this instance, and the next step is to enable it for your specific organization. As mentioned above, operational webhooks use a normal Svix account behind the scenes, so we'll first need to get the authentication token for this account. To do this you should run:
+
+```
+svix-server jwt generate org_00000000000SvixManagement00
+```
+
+This will give you a special JWT to access the operational webhooks account which is different to the normal JWT you use when interacting with Svix. Let's assume for example that the JWT it returned was `op_webhook_token_123`.
+
+To enable operational webhooks for a specific account we need to first create an application for it in the service account (remember: operational webhooks just use Svix behind the scenes). We'll use the default Svix account as an example: `org_23rb8YdGqMT0qIzpgGwdXfHirMu`.
+
+```
+curl -X 'POST' \
+  'http://localhost:8071/api/v1/app/' \
+  -H 'Authorization: Bearer op_webhook_token_123' \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "name": "Operational webhook for default org",
+        "uid": "org_23rb8YdGqMT0qIzpgGwdXfHirMu"
+    }'
+```
+
+This is it, we now have operational webhooks enabled for the default account. The only thing left is adding an endpoint where the operational webhooks are going to be sent to. For example:
+
+```
+curl -X 'POST' \
+  'https://api.eu.svix.com/api/v1/app/org_23rb8YdGqMT0qIzpgGwdXfHirMu/endpoint/' \
+  -H 'Authorization: Bearer AUTH_TOKEN' \
+  -H 'Accept: application/json' \
+  -H 'Content-Type: application/json' \
+  -d '{
+        "url": "https://operational-webhook-destination.com/webhook/",
+        "filterTypes": [
+          “endpoint.updated”,
+          “endpoint.deleted”
+        ],
+    }'
+```
+
+Note how we use the org ID of the default account as the `app_id` (or rather `uid` in this case), when creating an endpoint.
+
+That's it. You should now have working operational webhooks. If you ever want to create a new endpoint, or modify an existing endpoint, you just need to generate a JWT for the service account, and then use the JWT like you would use any other Svix account.
 
 ## Asymmetric signatures
 
@@ -331,6 +389,10 @@ To support graceful shutdown on the server, all running tasks are finished befor
 One of our main goals with open sourcing the Svix dispatcher is ease of use. The hosted Svix service, however, is quite complex due to our scale and the infrastructure it requires. This complexity is not useful for the vast majority of people and would make this project much harder to use and much more limited.
 This is why this code has been adjusted before being released, and some of the features, optimizations, and behaviors supported by the hosted dispatcher are not yet available in this repo. With that being said, other than some known incompatibilities, the internal Svix test suite passes. This means they are already mostly compatible, and we are working hard on bringing them to full feature parity.
 
+# Re-driving Redis DLQ
+We have an undocumented endpoint for re-driving failed messages that are DLQ'ed. You can do this by calling `POST /api/v1/admin/redrive-dlq/`.
+
+To monitor the DLQ depth, you should monitor the `svix.queue.depth_dlq` metric. Any non-zero values indicate that there is data in the DLQ. 
 
 # Development
 
@@ -358,6 +420,23 @@ A quick how to for contribution:
 # License
 
 Distributed under the MIT License. See [LICENSE](LICENSE) for more information.
+
+
+# Sending guides
+
+Here is a list of guides for sending webhooks with Svix:
+
+* [Send Webhooks with Python](https://www.svix.com/guides/sending/send-webhooks-with-python/) (also w/ [Django](https://www.svix.com/guides/sending/send-webhooks-with-python-django/) & [Flask](https://www.svix.com/guides/sending/send-webhooks-with-python-flask/))
+* [Send Webhooks with JavaScript](https://www.svix.com/guides/sending/send-webhooks-with-javascript/) (also w/ [NodeJS](https://www.svix.com/guides/sending/send-webhooks-with-javascript-nodejs/) & [Express](https://www.svix.com/guides/sending/send-webhooks-with-javascript-express/))
+* [Send Webhooks with TypeScript](https://www.svix.com/guides/sending/send-webhooks-with-typescript/)
+* [Send Webhooks with Go](https://www.svix.com/guides/sending/send-webhooks-with-go/)
+* [Send Webhooks with Java](https://www.svix.com/guides/sending/send-webhooks-with-java/) (also w/ [Spring](https://www.svix.com/guides/sending/send-webhooks-with-java-spring/))
+* [Send Webhooks with Kotlin](https://www.svix.com/guides/sending/send-webhooks-with-kotlin/)
+* [Send Webhooks with Rust](https://www.svix.com/guides/sending/send-webhooks-with-rust/)
+* [Send Webhooks with C#](https://www.svix.com/guides/sending/send-webhooks-with-c-sharp/) (also w/ [ASP.NET](https://www.svix.com/guides/sending/send-webhooks-with-c-aspnet-sharp/))
+* [Send Webhooks with PHP](https://www.svix.com/guides/sending/send-webhooks-with-php/) (also w/ [Laravel](https://www.svix.com/guides/sending/send-webhooks-with-php-laravel/))
+* [Send Webhooks with Ruby](https://www.svix.com/guides/sending/send-webhooks-with-ruby/)
+* [Send Webhooks with Svix CLI](https://www.svix.com/guides/sending/send-webhooks-with-svix-cli/)
 
 # Backed By
 

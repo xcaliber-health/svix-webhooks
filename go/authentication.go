@@ -1,47 +1,149 @@
+// Package svix this file is @generated DO NOT EDIT
 package svix
 
 import (
 	"context"
 
-	"github.com/svix/svix-webhooks/go/internal/openapi"
+	"github.com/svix/svix-webhooks/go/internal"
+	"github.com/svix/svix-webhooks/go/models"
 )
 
 type Authentication struct {
-	api *openapi.APIClient
+	client *internal.SvixHttpClient
 }
 
-type DashboardAccessOut openapi.DashboardAccessOut
-
-func (a *Authentication) DashboardAccess(appId string) (*DashboardAccessOut, error) {
-	return a.DashboardAccessWithOptions(appId, nil)
+func newAuthentication(client *internal.SvixHttpClient) *Authentication {
+	return &Authentication{
+		client: client,
+	}
 }
 
-func (a *Authentication) DashboardAccessWithOptions(appId string, options *PostOptions) (*DashboardAccessOut, error) {
-	req := a.api.AuthenticationApi.GetDashboardAccessApiV1AuthDashboardAccessAppIdPost(context.Background(), appId)
-	if options != nil {
-		if options.IdempotencyKey != nil {
-			req = req.IdempotencyKey(*options.IdempotencyKey)
+type AuthenticationAppPortalAccessOptions struct {
+	IdempotencyKey *string
+}
+
+type AuthenticationExpireAllOptions struct {
+	IdempotencyKey *string
+}
+
+type AuthenticationLogoutOptions struct {
+	IdempotencyKey *string
+}
+
+// Use this function to get magic links (and authentication codes) for connecting your users to the Consumer Application Portal.
+func (authentication *Authentication) AppPortalAccess(
+	ctx context.Context,
+	appId string,
+	appPortalAccessIn models.AppPortalAccessIn,
+	o *AuthenticationAppPortalAccessOptions,
+) (*models.AppPortalAccessOut, error) {
+	pathMap := map[string]string{
+		"app_id": appId,
+	}
+	headerMap := map[string]string{}
+	var err error
+	if o != nil {
+		internal.SerializeParamToMap("idempotency-key", o.IdempotencyKey, headerMap, &err)
+		if err != nil {
+			return nil, err
 		}
 	}
-	out, res, err := req.Execute()
-	if err != nil {
-		return nil, wrapError(err, res)
+	return internal.ExecuteRequest[models.AppPortalAccessIn, models.AppPortalAccessOut](
+		ctx,
+		authentication.client,
+		"POST",
+		"/api/v1/auth/app-portal-access/{app_id}",
+		pathMap,
+		nil,
+		headerMap,
+		&appPortalAccessIn,
+	)
+}
+
+// Expire all of the tokens associated with a specific application.
+func (authentication *Authentication) ExpireAll(
+	ctx context.Context,
+	appId string,
+	applicationTokenExpireIn models.ApplicationTokenExpireIn,
+	o *AuthenticationExpireAllOptions,
+) error {
+	pathMap := map[string]string{
+		"app_id": appId,
 	}
-	ret := DashboardAccessOut(out)
-	return &ret, nil
-}
-
-func (a *Authentication) Logout() error {
-	return a.LogoutWithOptions(nil)
-}
-
-func (a *Authentication) LogoutWithOptions(options *PostOptions) error {
-	req := a.api.AuthenticationApi.LogoutApiV1AuthLogoutPost(context.Background())
-	if options != nil {
-		if options.IdempotencyKey != nil {
-			req = req.IdempotencyKey(*options.IdempotencyKey)
+	headerMap := map[string]string{}
+	var err error
+	if o != nil {
+		internal.SerializeParamToMap("idempotency-key", o.IdempotencyKey, headerMap, &err)
+		if err != nil {
+			return err
 		}
 	}
-	res, err := req.Execute()
-	return wrapError(err, res)
+	_, err = internal.ExecuteRequest[models.ApplicationTokenExpireIn, any](
+		ctx,
+		authentication.client,
+		"POST",
+		"/api/v1/auth/app/{app_id}/expire-all",
+		pathMap,
+		nil,
+		headerMap,
+		&applicationTokenExpireIn,
+	)
+	return err
+}
+
+// Deprecated: Please use `AppPortalAccess` instead.
+func (authentication *Authentication) DashboardAccess(
+	ctx context.Context,
+	appId string,
+	o *AuthenticationDashboardAccessOptions,
+) (*models.DashboardAccessOut, error) {
+	pathMap := map[string]string{
+		"app_id": appId,
+	}
+	headerMap := map[string]string{}
+	var err error
+	if o != nil {
+		internal.SerializeParamToMap("idempotency-key", o.IdempotencyKey, headerMap, &err)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return internal.ExecuteRequest[any, models.DashboardAccessOut](
+		ctx,
+		authentication.client,
+		"POST",
+		"/api/v1/auth/dashboard-access/{app_id}",
+		pathMap,
+		nil,
+		headerMap,
+		nil,
+	)
+}
+
+// Logout an app token.
+//
+// Trying to log out other tokens will fail.
+func (authentication *Authentication) Logout(
+	ctx context.Context,
+	o *AuthenticationLogoutOptions,
+) error {
+	headerMap := map[string]string{}
+	var err error
+	if o != nil {
+		internal.SerializeParamToMap("idempotency-key", o.IdempotencyKey, headerMap, &err)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = internal.ExecuteRequest[any, any](
+		ctx,
+		authentication.client,
+		"POST",
+		"/api/v1/auth/logout",
+		nil,
+		nil,
+		headerMap,
+		nil,
+	)
+	return err
 }

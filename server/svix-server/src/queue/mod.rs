@@ -1,20 +1,20 @@
-use std::{sync::Arc, time::Duration};
+use std::{marker::PhantomData, num::NonZeroUsize, sync::Arc, time::Duration};
 
-use axum::async_trait;
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
-use svix_ksuid::*;
+use omniqueue::{
+    backends::InMemoryBackend, Delivery, DynConsumer, QueueConsumer, ScheduledQueueProducer,
+};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::{
     cfg::{Configuration, QueueBackend},
     core::{
-        run_with_retries::run_with_retries,
+        retry::{run_with_retries, Retry},
         types::{ApplicationId, EndpointId, MessageAttemptTriggerType, MessageId},
     },
-    error::{Error, ErrorType, Result},
+    error::{Error, ErrorType, Result, Traceable},
 };
 
-pub mod memory;
+pub mod rabbitmq;
 pub mod redis;
 
 const RETRY_SCHEDULE: &[Duration] = &[
@@ -22,6 +22,8 @@ const RETRY_SCHEDULE: &[Duration] = &[
     Duration::from_millis(20),
     Duration::from_millis(40),
 ];
+
+pub type TaskQueueDelivery = SvixOmniDelivery<QueueTask>;
 
 fn should_retry(err: &Error) -> bool {
     matches!(err.typ, ErrorType::Queue(_))
@@ -32,15 +34,29 @@ pub async fn new_pair(
     prefix: Option<&str>,
 ) -> (TaskQueueProducer, TaskQueueConsumer) {
     match cfg.queue_backend() {
-        QueueBackend::Redis(dsn) => {
-            let pool = crate::redis::new_redis_pool(dsn, cfg).await;
-            redis::new_pair(pool, prefix).await
+        QueueBackend::Redis(_)
+        | QueueBackend::RedisCluster(_)
+        | QueueBackend::RedisSentinel(_, _) => redis::new_pair(cfg, prefix).await,
+        QueueBackend::Memory => {
+            let (producer, consumer) = InMemoryBackend::builder()
+                .build_pair()
+                .await
+                .expect("building in-memory queue can't fail");
+
+            (
+                TaskQueueProducer::new(producer),
+                TaskQueueConsumer::new(consumer),
+            )
         }
-        QueueBackend::RedisCluster(dsn) => {
-            let pool = crate::redis::new_redis_pool_clustered(dsn, cfg).await;
-            redis::new_pair(pool, prefix).await
+        QueueBackend::RabbitMq(dsn) => {
+            let prefix = prefix.unwrap_or("");
+            let queue = format!("{prefix}-message-queue");
+            // Default to a prefetch_size of 1, as it's the safest (least likely to starve consumers)
+            let prefetch_size = cfg.rabbit_consumer_prefetch_size.unwrap_or(1);
+            rabbitmq::new_pair(dsn, queue, prefetch_size)
+                .await
+                .expect("can't connect to rabbit")
         }
-        QueueBackend::Memory => memory::new_pair().await,
     }
 }
 
@@ -76,6 +92,7 @@ impl MessageTask {
 pub struct MessageTaskBatch {
     pub msg_id: MessageId,
     pub app_id: ApplicationId,
+    pub force_endpoint: Option<EndpointId>,
     pub trigger_type: MessageAttemptTriggerType,
 }
 
@@ -83,11 +100,13 @@ impl MessageTaskBatch {
     pub fn new_task(
         msg_id: MessageId,
         app_id: ApplicationId,
+        force_endpoint: Option<EndpointId>,
         trigger_type: MessageAttemptTriggerType,
     ) -> QueueTask {
         QueueTask::MessageBatch(Self {
             msg_id,
             app_id,
+            force_endpoint,
             trigger_type,
         })
     }
@@ -102,237 +121,201 @@ pub enum QueueTask {
     MessageBatch(MessageTaskBatch),
 }
 
-pub struct TaskQueueProducer(Box<dyn TaskQueueSend>);
+impl QueueTask {
+    /// Returns a type string, for logging.
+    pub fn task_type(&self) -> &'static str {
+        match self {
+            QueueTask::HealthCheck => "HealthCheck",
+            QueueTask::MessageV1(_) => "MessageV1",
+            QueueTask::MessageBatch(_) => "MessageBatch",
+        }
+    }
 
-impl Clone for TaskQueueProducer {
-    fn clone(&self) -> Self {
-        Self(self.0.clone_box())
+    pub fn msg_id(&self) -> Option<&str> {
+        match self {
+            QueueTask::HealthCheck => None,
+            QueueTask::MessageV1(v1) => Some(&v1.msg_id),
+            QueueTask::MessageBatch(batch) => Some(&batch.msg_id),
+        }
     }
 }
 
-impl TaskQueueProducer {
-    pub async fn send(&self, task: QueueTask, delay: Option<Duration>) -> Result<()> {
+pub type TaskQueueProducer = SvixOmniProducer<QueueTask>;
+pub type TaskQueueConsumer = SvixOmniConsumer<QueueTask>;
+
+pub struct SvixOmniProducer<T: OmniMessage> {
+    inner: Arc<omniqueue::DynScheduledProducer>,
+    _phantom: PhantomData<T>,
+}
+
+// Manual impl to avoid adding 'Clone' bound on T
+impl<T: OmniMessage> Clone for SvixOmniProducer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<T: OmniMessage> SvixOmniProducer<T> {
+    pub(super) fn new(inner: impl ScheduledQueueProducer + 'static) -> Self {
+        Self {
+            inner: Arc::new(inner.into_dyn_scheduled()),
+            _phantom: PhantomData,
+        }
+    }
+
+    #[tracing::instrument(skip_all, name = "queue_send")]
+    pub async fn send(&self, task: &T, delay: Option<Duration>) -> Result<()> {
         let task = Arc::new(task);
         run_with_retries(
-            || async { self.0.send(task.clone(), delay).await },
+            || async {
+                if let Some(delay) = delay {
+                    self.inner
+                        .send_serde_json_scheduled(task.as_ref(), delay)
+                        .await
+                } else {
+                    self.inner.send_serde_json(task.as_ref()).await
+                }
+                .map_err(Into::into)
+            },
             should_retry,
             RETRY_SCHEDULE,
         )
         .await
     }
 
-    pub async fn ack(&self, delivery: TaskQueueDelivery) -> Result<()> {
-        tracing::trace!("ack {}", delivery.id);
-        run_with_retries(
-            || async { self.0.ack(&delivery).await },
-            should_retry,
-            RETRY_SCHEDULE,
-        )
-        .await
-    }
-
-    pub async fn nack(&self, delivery: TaskQueueDelivery) -> Result<()> {
-        tracing::trace!("nack {}", delivery.id);
-        run_with_retries(
-            || async { self.0.nack(&delivery).await },
-            should_retry,
-            RETRY_SCHEDULE,
-        )
-        .await
+    #[tracing::instrument(skip_all, name = "redrive_dlq")]
+    pub async fn redrive_dlq(&self) -> Result<()> {
+        self.inner.redrive_dlq().await.map_err(Into::into)
     }
 }
 
-pub struct TaskQueueConsumer(Box<dyn TaskQueueReceive + Send + Sync>);
+pub struct SvixOmniConsumer<T: OmniMessage> {
+    inner: DynConsumer,
+    _phantom: PhantomData<T>,
+}
 
-impl TaskQueueConsumer {
-    pub async fn receive_all(&mut self) -> Result<Vec<TaskQueueDelivery>> {
-        self.0.receive_all().await
+pub trait OmniMessage: Serialize + DeserializeOwned + Send + Sync {
+    fn task_id(&self) -> Option<&str>;
+}
+
+impl OmniMessage for QueueTask {
+    fn task_id(&self) -> Option<&str> {
+        self.msg_id()
     }
 }
 
-pub struct TaskQueueDelivery {
-    pub id: String,
-    pub task: Arc<QueueTask>,
-}
-
-impl TaskQueueDelivery {
-    /// The `timestamp` is when this message will be delivered at
-    fn from_arc(task: Arc<QueueTask>, timestamp: Option<DateTime<Utc>>) -> Self {
-        let ksuid = KsuidMs::new(timestamp, None);
+impl<T: OmniMessage> SvixOmniConsumer<T> {
+    pub(super) fn new(inner: impl QueueConsumer + 'static) -> Self {
         Self {
-            id: ksuid.to_string(),
-            task,
-        }
-    }
-}
-
-#[async_trait]
-trait TaskQueueSend: Sync + Send {
-    async fn send(&self, task: Arc<QueueTask>, delay: Option<Duration>) -> Result<()>;
-    fn clone_box(&self) -> Box<dyn TaskQueueSend>;
-
-    async fn ack(&self, delivery: &TaskQueueDelivery) -> Result<()>;
-
-    /// By default NACKing a [`TaskQueueDelivery`] simply reinserts it in the back of the queue
-    /// without any delay. Additionally it `ack`s the orignal, now duplicated task, such as to
-    /// avoid memory leaks in persistent implementations of the queue.
-    async fn nack(&self, delivery: &TaskQueueDelivery) -> Result<()> {
-        tracing::debug!("nack {}", delivery.id);
-        self.send(delivery.task.clone(), None).await?;
-        self.ack(delivery).await
-    }
-}
-
-impl Clone for Box<dyn TaskQueueSend> {
-    fn clone(&self) -> Box<dyn TaskQueueSend> {
-        self.clone_box()
-    }
-}
-
-#[async_trait]
-trait TaskQueueReceive {
-    async fn receive_all(&mut self) -> Result<Vec<TaskQueueDelivery>>;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // TODO: Test Redis impl too
-
-    /// Creates a [`MessageTask`] with filler information and the given MessageId inner String
-    fn mock_message(message_id: String) -> QueueTask {
-        MessageTask::new_task(
-            MessageId(message_id),
-            ApplicationId("TestEndpointID".to_owned()),
-            EndpointId("TestEndpointID".to_owned()),
-            MessageAttemptTriggerType::Scheduled,
-        )
-    }
-
-    /// Sends a message with the given TaskQueueProducer reference and asserts that the result is OK
-    async fn assert_send(tx: &TaskQueueProducer, message_id: &str) {
-        assert!(tx
-            .send(mock_message(message_id.to_owned()), None)
-            .await
-            .is_ok());
-    }
-
-    /// Receives a message with the given TaskQueueConsumer mutable reference and asserts that it is
-    /// equal to the mock message with the given message_id.
-    async fn assert_recv(rx: &mut TaskQueueConsumer, message_id: &str) {
-        assert_eq!(
-            *rx.receive_all().await.unwrap().get(0).unwrap().task,
-            mock_message(message_id.to_owned())
-        )
-    }
-
-    #[tokio::test]
-    async fn test_single_producer_single_consumer() {
-        let (tx_mem, mut rx_mem) = memory::new_pair().await;
-
-        let msg_id = "TestMessageID1";
-
-        assert_send(&tx_mem, msg_id).await;
-        assert_recv(&mut rx_mem, msg_id).await;
-    }
-
-    #[tokio::test]
-    async fn test_multiple_producer_single_consumer() {
-        let (tx_mem, mut rx_mem) = memory::new_pair().await;
-
-        let msg_1 = "TestMessageID1";
-        let msg_2 = "TestMessageID2";
-
-        tokio::spawn({
-            let tx_mem = tx_mem.clone();
-            async move {
-                assert_send(&tx_mem, msg_1).await;
-            }
-        });
-        tokio::spawn(async move {
-            assert_send(&tx_mem, msg_2).await;
-        });
-
-        assert_recv(&mut rx_mem, msg_1).await;
-        assert_recv(&mut rx_mem, msg_2).await;
-    }
-
-    #[tokio::test]
-    async fn test_delay() {
-        let (tx_mem, mut rx_mem) = memory::new_pair().await;
-
-        let msg_1 = "TestMessageID1";
-        let msg_2 = "TestMessageID2";
-
-        assert!(tx_mem
-            .send(
-                mock_message(msg_1.to_owned()),
-                Some(Duration::from_millis(200))
-            )
-            .await
-            .is_ok());
-        assert_send(&tx_mem, msg_2).await;
-
-        assert_recv(&mut rx_mem, msg_2).await;
-        assert_recv(&mut rx_mem, msg_1).await;
-    }
-
-    #[tokio::test]
-    async fn test_ack() {
-        let (tx_mem, mut rx_mem) = memory::new_pair().await;
-        assert!(tx_mem
-            .send(mock_message("test".to_owned()), None)
-            .await
-            .is_ok());
-
-        let recv = rx_mem
-            .receive_all()
-            .await
-            .unwrap()
-            .into_iter()
-            .next()
-            .unwrap();
-
-        assert_eq!(*recv.task, mock_message("test".to_owned()));
-
-        assert!(tx_mem.ack(recv).await.is_ok());
-
-        tokio::select! {
-            _ = rx_mem.receive_all() => {
-                panic!("`rx_mem` received second message");
-            }
-
-            // FIXME: Find out correct timeout duration
-            _ = tokio::time::sleep(Duration::from_millis(500)) => {}
+            inner: inner.into_dyn(),
+            _phantom: PhantomData,
         }
     }
 
-    #[tokio::test]
-    async fn test_nack() {
-        let (tx_mem, mut rx_mem) = memory::new_pair().await;
-        assert!(tx_mem
-            .send(mock_message("test".to_owned()), None)
+    #[tracing::instrument(skip_all, name = "queue_receive_all")]
+    pub async fn receive_all(&mut self, deadline: Duration) -> Result<Vec<SvixOmniDelivery<T>>> {
+        pub const MAX_MESSAGES: usize = 128;
+        self.inner
+            .receive_all(MAX_MESSAGES, deadline)
             .await
-            .is_ok());
-
-        let recv = rx_mem
-            .receive_all()
-            .await
-            .unwrap()
+            .map_err(Error::from)
+            .trace()?
             .into_iter()
-            .next()
-            .unwrap();
-        assert_eq!(*recv.task, mock_message("test".to_owned()));
+            .map(|acker| {
+                Ok(SvixOmniDelivery {
+                    task: Arc::new(
+                        acker
+                            .payload_serde_json()
+                            .map_err(|e| {
+                                Error::queue(format!("Failed to decode queue task: {e:?}"))
+                            })?
+                            .ok_or_else(|| Error::queue("Unexpected empty delivery"))?,
+                    ),
 
-        assert!(tx_mem.nack(recv).await.is_ok());
+                    acker,
+                })
+            })
+            .collect()
+    }
 
-        tokio::select! {
-            _ = rx_mem.receive_all() => {}
+    pub fn max_messages(&self) -> Option<NonZeroUsize> {
+        self.inner.max_messages()
+    }
+}
 
-            // FIXME: Find out correct timeout duration
-            _ = tokio::time::sleep(Duration::from_millis(500)) => {
-                panic!("`rx_mem` did not receive second message");
+#[derive(Debug)]
+pub struct SvixOmniDelivery<T> {
+    pub task: Arc<T>,
+    pub(super) acker: Delivery,
+}
+
+impl<T: OmniMessage> SvixOmniDelivery<T> {
+    pub async fn set_ack_deadline(&mut self, duration: Duration) -> Result<()> {
+        Ok(self.acker.set_ack_deadline(duration).await?)
+    }
+    pub async fn ack(self) -> Result<()> {
+        tracing::trace!(
+            task_id = self.task.task_id().map(tracing::field::display),
+            "ack"
+        );
+
+        let mut retry = Retry::new(should_retry, RETRY_SCHEDULE);
+        let mut acker = Some(self.acker);
+        loop {
+            if let Some(result) = retry
+                .run(|| async {
+                    match acker.take() {
+                        Some(delivery) => {
+                            delivery.ack().await.map_err(|(e, delivery)| {
+                                // Put the delivery back in acker before retrying, to
+                                // satisfy the expect above.
+                                acker = Some(delivery);
+                                e.into()
+                            })
+                        }
+                        None => unreachable!(),
+                    }
+                })
+                .await
+            {
+                return result;
+            }
+        }
+    }
+
+    pub async fn nack(self) -> Result<()> {
+        tracing::trace!(
+            task_id = self.task.task_id().map(tracing::field::display),
+            "nack"
+        );
+
+        let mut retry = Retry::new(should_retry, RETRY_SCHEDULE);
+        let mut acker = Some(self.acker);
+        loop {
+            if let Some(result) = retry
+                .run(|| async {
+                    match acker.take() {
+                        Some(delivery) => {
+                            delivery
+                                .nack()
+                                .await
+                                .map_err(|(e, delivery)| {
+                                    // Put the delivery back in acker before retrying, to
+                                    // satisfy the expect above.
+                                    acker = Some(delivery);
+                                    Error::from(e)
+                                })
+                                .trace()
+                        }
+                        _ => unreachable!(),
+                    }
+                })
+                .await
+            {
+                return result;
             }
         }
     }

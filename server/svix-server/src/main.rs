@@ -4,17 +4,28 @@
 #![warn(clippy::all)]
 #![forbid(unsafe_code)]
 
-use dotenv::dotenv;
-use std::process::exit;
-use svix_server::core::types::{EndpointSecretInternal, OrganizationId};
-use svix_server::db::wipe_org;
+use anyhow::bail;
+use clap::{Parser, Subcommand};
+use dotenvy::dotenv;
+use svix_server::{
+    cfg,
+    core::{
+        security::{default_org_id, generate_org_token},
+        types::{EndpointSecretInternal, OrganizationId},
+    },
+    db,
+    db::wipe_org,
+    run, setup_tracing,
+};
+use tracing_subscriber::util::SubscriberInitExt;
 use validator::Validate;
 
-use svix_server::core::security::{default_org_id, generate_org_token};
+#[cfg(all(target_env = "msvc", feature = "jemalloc"))]
+compile_error!("jemalloc cannot be enabled on msvc");
 
-use svix_server::{cfg, db, run, setup_tracing};
-
-use clap::{Parser, Subcommand};
+#[cfg(all(not(target_env = "msvc"), feature = "jemalloc"))]
+#[global_allocator]
+static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod wait_for;
 use wait_for::wait_for_dsn;
@@ -67,6 +78,10 @@ enum Commands {
         #[clap(long)]
         yes_i_know_what_im_doing: bool,
     },
+
+    /// Generate OpenAPI JSON specification and exit
+    #[clap()]
+    GenerateOpenapi,
 }
 
 #[derive(Subcommand)]
@@ -94,13 +109,14 @@ fn org_id_parser(s: &str) -> Result<OrganizationId, String> {
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     dotenv().ok();
 
     let args = Args::parse();
-    let cfg = cfg::load().expect("Error loading configuration");
+    let cfg = cfg::load()?;
 
-    setup_tracing(&cfg);
+    let (tracing_subscriber, _guard) = setup_tracing(&cfg, /* for_test = */ false);
+    tracing_subscriber.init();
 
     if let Some(wait_for_seconds) = args.wait_for {
         let mut wait_for = Vec::with_capacity(2);
@@ -120,28 +136,30 @@ async fn main() {
             ));
         }
 
-        futures::future::join_all(wait_for).await;
+        if let Err(e) = futures::future::try_join_all(wait_for).await {
+            bail!(e);
+        }
     }
 
     if args.run_migrations {
+        tracing::debug!("Migrations: Running");
         db::run_migrations(&cfg).await;
-        tracing::debug!("Migrations: success");
+        tracing::debug!("Migrations: Success");
     }
 
     match args.command {
         Some(Commands::Migrate) => {
             db::run_migrations(&cfg).await;
             println!("Migrations: success");
-            exit(0);
         }
         Some(Commands::Jwt {
             command: JwtCommands::Generate { org_id },
         }) => {
             let org_id = org_id.unwrap_or_else(default_org_id);
-            let token =
-                generate_org_token(&cfg.jwt_secret, org_id).expect("Error generating token");
-            println!("Token (Bearer): {token}");
-            exit(0);
+            match generate_org_token(&cfg.jwt_signing_config, org_id) {
+                Ok(token) => println!("Token (Bearer): {token}"),
+                Err(e) => tracing::error!("Error generating token: {e}"),
+            }
         }
         Some(Commands::AsymmetricKey { command }) => match command {
             AsymmetricKeyCommands::Generate => {
@@ -151,7 +169,6 @@ async fn main() {
                     .unwrap();
                 println!("Secret key: {}", secret.serialize_secret_key());
                 println!("Public key: {}", secret.serialize_public_key());
-                exit(0);
             }
         },
         Some(Commands::Wipe {
@@ -163,13 +180,26 @@ async fn main() {
             } else {
                 println!("Please confirm you wish to wipe this organization with the `--yes-i-know-what-im-doing` flag");
             }
-
-            exit(0);
         }
-        None => {}
+        Some(Commands::GenerateOpenapi) => {
+            let mut openapi = svix_server::openapi::initialize_openapi();
+
+            let router = svix_server::v1::router();
+            _ = aide::axum::ApiRouter::new()
+                .nest("/api/v1", router)
+                .finish_api(&mut openapi);
+
+            svix_server::openapi::postprocess_spec(&mut openapi);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&openapi).expect("Failed to serialize JSON spec")
+            );
+        }
+        None => {
+            run(cfg).await;
+        }
     };
 
-    run(cfg, None).await;
-
     opentelemetry::global::shutdown_tracer_provider();
+    Ok(())
 }

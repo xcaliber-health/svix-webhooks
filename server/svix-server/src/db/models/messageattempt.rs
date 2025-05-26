@@ -2,8 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 use chrono::Utc;
-use sea_orm::entity::prelude::*;
-use sea_orm::ActiveValue::Set;
+use sea_orm::{entity::prelude::*, ActiveValue::Set};
 
 use crate::core::types::{
     BaseId, EndpointId, MessageAttemptId, MessageAttemptTriggerType, MessageEndpointId, MessageId,
@@ -26,6 +25,8 @@ pub struct Model {
     pub response: String,
     pub ended_at: Option<DateTimeWithTimeZone>,
     pub trigger_type: MessageAttemptTriggerType,
+    /// Response duration in milliseconds
+    pub response_duration_ms: i64,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter, DeriveRelation)]

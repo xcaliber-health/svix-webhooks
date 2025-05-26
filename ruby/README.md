@@ -69,7 +69,7 @@ First checkout the [core README](../README.md#development) for details on how to
 ## Building
 
 ```sh
-bundler exec rake build
+bundle exec rake build
 ```
 
 ## Contributing

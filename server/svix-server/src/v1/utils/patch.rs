@@ -1,19 +1,21 @@
 // SPDX-FileCopyrightText: © 2022 Svix Authors
 // SPDX-License-Identifier: MIT
 
-//! Module defining utilites for PATCH requests focused mostly around non-required field types.
+//! Module defining utilities for PATCH requests focused mostly around non-required field types.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use validator::Validate;
 
-/// This is an enum that will wrap every nullable field for a PATCH request. Nonnullable fields can
-/// be represented via an [`UnrequiredField`]. This differs from an [`Option`] in that it
-/// distinguishes null values and absent values such that an optional value in a model may be made
-/// None via PATCHing while allowing omitted fields to be skipped when updating.
+/// This is an enum that will wrap every nullable field for a PATCH request.
 ///
-/// NOTE: You must tag these fields with `#[serde(default)]` in order for the serialization to work
-/// correctly.
+/// Nonnullable fields can be represented via an [`UnrequiredField`]. This
+/// differs from an [`Option`] in that it distinguishes null values and absent
+/// values such that an optional value in a model may be made `None` via
+/// PATCHing while allowing omitted fields to be skipped when updating.
+///
+/// NOTE: You must tag these fields with `#[serde(default)]` in order for the
+/// serialization to work correctly.
 #[derive(Debug)]
 pub enum UnrequiredNullableField<T> {
     Absent,
@@ -21,14 +23,16 @@ pub enum UnrequiredNullableField<T> {
     Some(T),
 }
 
-/// This enum is a non-nullable equivalent to [`UnrequiredNullableField`]. This is effectively an
-/// [`Option`] with the additional context that any field which uses this type is a member of a
-/// PATCH request model and that the field may be absent, meaning it is not to be updated. In
-/// comparison, [`Option`]s are used in other [`ModelIn`]s to define a field, that when absent,
-/// is `null`.
+/// This enum is a non-nullable equivalent to [`UnrequiredNullableField`].
 ///
-/// NOTE: You must tag these fields with `#[serde(default)]` in order for the serialization to work
-/// correctly.
+/// This is effectively an [`Option`] with the additional context that any field
+/// which uses this type is a member of a PATCH request model and that the field
+/// may be absent, meaning it is not to be updated. In comparison, [`Option`]s
+/// are used in other [`ModelIn`]s to define a field, that when absent, is
+/// `null`.
+///
+/// NOTE: You must tag these fields with `#[serde(default)]` in order for the
+/// serialization to work correctly.
 #[derive(Debug)]
 pub enum UnrequiredField<T> {
     Absent,
@@ -84,7 +88,7 @@ impl<T> From<Option<T>> for UnrequiredNullableField<T> {
 }
 
 impl<T: Validate> Validate for UnrequiredNullableField<T> {
-    fn validate(&self) -> std::result::Result<(), validator::ValidationErrors> {
+    fn validate(&self) -> Result<(), validator::ValidationErrors> {
         match self {
             UnrequiredNullableField::Absent | UnrequiredNullableField::None => Ok(()),
             UnrequiredNullableField::Some(v) => v.validate(),
@@ -93,7 +97,7 @@ impl<T: Validate> Validate for UnrequiredNullableField<T> {
 }
 
 impl<T: Validate> Validate for UnrequiredField<T> {
-    fn validate(&self) -> std::result::Result<(), validator::ValidationErrors> {
+    fn validate(&self) -> Result<(), validator::ValidationErrors> {
         match self {
             UnrequiredField::Absent => Ok(()),
             UnrequiredField::Some(v) => v.validate(),
@@ -127,7 +131,7 @@ impl<'de, T> Deserialize<'de> for UnrequiredNullableField<T>
 where
     T: Deserialize<'de>,
 {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -139,7 +143,7 @@ impl<'de, T> Deserialize<'de> for UnrequiredField<T>
 where
     T: Deserialize<'de>,
 {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
@@ -151,7 +155,7 @@ impl<T> Serialize for UnrequiredNullableField<T>
 where
     T: Serialize,
 {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -168,7 +172,7 @@ impl<T> Serialize for UnrequiredField<T>
 where
     T: Serialize,
 {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
@@ -191,7 +195,7 @@ impl<T: JsonSchema> JsonSchema for UnrequiredField<T> {
     }
 
     fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        Option::<T>::json_schema(gen)
+        gen.subschema_for::<T>()
     }
 }
 
@@ -205,7 +209,7 @@ impl<T: JsonSchema> JsonSchema for UnrequiredNullableField<T> {
     }
 
     fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
-        Option::<T>::json_schema(gen)
+        gen.subschema_for::<Option<T>>()
     }
 }
 
@@ -217,7 +221,7 @@ impl<T: JsonSchema> JsonSchema for UnrequiredNullableField<T> {
 /// implementation, and the member that `self`, and `model` share that is being modified.
 ///
 /// Optionally, a fourth identifier may be given which is meant to be a closure that takes the type
-/// of self's version of the member beng modified and returns model's version of the member being
+/// of self's version of the member being modified and returns model's version of the member being
 /// modified. This is applied via [`UnrequiredNullableField::map`] such that  basic type conversions may
 /// be made.
 ///
@@ -249,7 +253,7 @@ pub(crate) use patch_field_non_nullable;
 /// implementation, and the member that `self`, and `model` share that is being modified.
 ///
 /// Optionally, a fourth identifier may be given which is meant to be a closure that takes the type
-/// of self's version of the member beng modified and returns model's version of the member being
+/// of self's version of the member being modified and returns model's version of the member being
 /// modified. This is applied via [`UnrequiredNullableField::map`] such that  basic type conversions may
 /// be made.
 ///

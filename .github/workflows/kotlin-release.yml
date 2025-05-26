@@ -1,28 +1,27 @@
 name: Kotlin Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Mega Releaser
+    types:
+      - completed
 
 jobs:
   kotlin:
     name: Kotlin Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    environment: release
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Setup Java
-        uses: actions/setup-java@v2
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '11'
-
-      - name: Regen openapi libs
-        run: |
-          yarn
-          ./regen_openapi.sh
 
       - name: Restore gradle.properties
         run: |
@@ -46,7 +45,7 @@ jobs:
           echo -e "$OSSRH_GPG_SECRET_KEY" | gpg --batch --import
         env:
           OSSRH_GPG_SECRET_KEY: ${{ secrets.OSSRH_GPG_SECRET_KEY }}
-  
+
       - name: Publish
         run: |
           cd kotlin

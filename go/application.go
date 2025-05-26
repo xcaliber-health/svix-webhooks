@@ -1,108 +1,203 @@
+// Package svix this file is @generated DO NOT EDIT
 package svix
 
 import (
 	"context"
 
-	"github.com/svix/svix-webhooks/go/internal/openapi"
-)
-
-type (
-	ListResponseApplicationOut openapi.ListResponseApplicationOut
-	ApplicationIn              openapi.ApplicationIn
-	ApplicationOut             openapi.ApplicationOut
+	"github.com/svix/svix-webhooks/go/internal"
+	"github.com/svix/svix-webhooks/go/models"
 )
 
 type Application struct {
-	api *openapi.APIClient
+	client *internal.SvixHttpClient
+}
+
+func newApplication(client *internal.SvixHttpClient) *Application {
+	return &Application{
+		client: client,
+	}
 }
 
 type ApplicationListOptions struct {
+	// Limit the number of returned items
+	Limit *uint64
+	// The iterator returned from a prior invocation
 	Iterator *string
-	Limit    *int32
+
+	// The sorting order of the returned items
+	Order *models.Ordering
 }
 
-func (a *Application) List(options *ApplicationListOptions) (*ListResponseApplicationOut, error) {
-	req := a.api.ApplicationApi.ListApplicationsApiV1AppGet(context.Background())
-	if options != nil {
-		if options.Iterator != nil {
-			req = req.Iterator(*options.Iterator)
-		}
-		if options.Limit != nil {
-			req = req.Limit(*options.Limit)
-		}
-	}
-	resp, res, err := req.Execute()
-	if err != nil {
-		return nil, wrapError(err, res)
-	}
-	ret := ListResponseApplicationOut(resp)
-	return &ret, nil
+type ApplicationCreateOptions struct {
+	IdempotencyKey *string
 }
 
-func (a *Application) Create(applicationIn *ApplicationIn) (*ApplicationOut, error) {
-	return a.CreateWithOptions(applicationIn, nil)
-}
-
-func (a *Application) CreateWithOptions(applicationIn *ApplicationIn, options *PostOptions) (*ApplicationOut, error) {
-	req := a.api.ApplicationApi.CreateApplicationApiV1AppPost(context.Background())
-	req = req.ApplicationIn(openapi.ApplicationIn(*applicationIn))
-	if options != nil {
-		if options.IdempotencyKey != nil {
-			req = req.IdempotencyKey(*options.IdempotencyKey)
+// List of all the organization's applications.
+func (application *Application) List(
+	ctx context.Context,
+	o *ApplicationListOptions,
+) (*models.ListResponseApplicationOut, error) {
+	queryMap := map[string]string{}
+	var err error
+	if o != nil {
+		internal.SerializeParamToMap("limit", o.Limit, queryMap, &err)
+		internal.SerializeParamToMap("iterator", o.Iterator, queryMap, &err)
+		internal.SerializeParamToMap("order", o.Order, queryMap, &err)
+		if err != nil {
+			return nil, err
 		}
 	}
-	resp, res, err := req.Execute()
-	if err != nil {
-		return nil, wrapError(err, res)
+	return internal.ExecuteRequest[any, models.ListResponseApplicationOut](
+		ctx,
+		application.client,
+		"GET",
+		"/api/v1/app",
+		nil,
+		queryMap,
+		nil,
+		nil,
+	)
+}
+
+// Create a new application.
+func (application *Application) Create(
+	ctx context.Context,
+	applicationIn models.ApplicationIn,
+	o *ApplicationCreateOptions,
+) (*models.ApplicationOut, error) {
+	queryMap := map[string]string{
+		"get_if_exists": "false",
 	}
-	ret := ApplicationOut(resp)
-	return &ret, nil
-}
-
-func (a *Application) GetOrCreate(applicationIn *ApplicationIn) (*ApplicationOut, error) {
-	return a.GetOrCreateWithOptions(applicationIn, nil)
-}
-
-func (a *Application) GetOrCreateWithOptions(applicationIn *ApplicationIn, options *PostOptions) (*ApplicationOut, error) {
-	req := a.api.ApplicationApi.CreateApplicationApiV1AppPost(context.Background())
-	req = req.ApplicationIn(openapi.ApplicationIn(*applicationIn))
-	req = req.GetIfExists(true)
-	if options != nil {
-		if options.IdempotencyKey != nil {
-			req = req.IdempotencyKey(*options.IdempotencyKey)
+	headerMap := map[string]string{}
+	var err error
+	if o != nil {
+		internal.SerializeParamToMap("idempotency-key", o.IdempotencyKey, headerMap, &err)
+		if err != nil {
+			return nil, err
 		}
 	}
-	resp, res, err := req.Execute()
-	if err != nil {
-		return nil, wrapError(err, res)
-	}
-	ret := ApplicationOut(resp)
-	return &ret, nil
+	return internal.ExecuteRequest[models.ApplicationIn, models.ApplicationOut](
+		ctx,
+		application.client,
+		"POST",
+		"/api/v1/app",
+		nil,
+		queryMap,
+		headerMap,
+		&applicationIn,
+	)
 }
 
-func (a *Application) Get(appId string) (*ApplicationOut, error) {
-	req := a.api.ApplicationApi.GetApplicationApiV1AppAppIdGet(context.Background(), appId)
-	resp, res, err := req.Execute()
-	if err != nil {
-		return nil, wrapError(err, res)
+// Get or create a new application.
+func (application *Application) GetOrCreate(
+	ctx context.Context,
+	applicationIn models.ApplicationIn,
+	o *ApplicationCreateOptions,
+) (*models.ApplicationOut, error) {
+	queryMap := map[string]string{
+		"get_if_exists": "true",
 	}
-	ret := ApplicationOut(resp)
-	return &ret, nil
+	headerMap := map[string]string{}
+
+	var err error
+	if o != nil {
+		internal.SerializeParamToMap("idempotency-key", o.IdempotencyKey, headerMap, &err)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return internal.ExecuteRequest[models.ApplicationIn, models.ApplicationOut](
+		ctx,
+		application.client,
+		"POST",
+		"/api/v1/app",
+		nil,
+		queryMap,
+		headerMap,
+		&applicationIn,
+	)
 }
 
-func (a *Application) Update(appId string, applicationIn *ApplicationIn) (*ApplicationOut, error) {
-	req := a.api.ApplicationApi.UpdateApplicationApiV1AppAppIdPut(context.Background(), appId)
-	req = req.ApplicationIn(openapi.ApplicationIn(*applicationIn))
-	resp, res, err := req.Execute()
-	if err != nil {
-		return nil, wrapError(err, res)
+// Get an application.
+func (application *Application) Get(
+	ctx context.Context,
+	appId string,
+) (*models.ApplicationOut, error) {
+	pathMap := map[string]string{
+		"app_id": appId,
 	}
-	ret := ApplicationOut(resp)
-	return &ret, nil
+	return internal.ExecuteRequest[any, models.ApplicationOut](
+		ctx,
+		application.client,
+		"GET",
+		"/api/v1/app/{app_id}",
+		pathMap,
+		nil,
+		nil,
+		nil,
+	)
 }
 
-func (a *Application) Delete(appId string) error {
-	req := a.api.ApplicationApi.DeleteApplicationApiV1AppAppIdDelete(context.Background(), appId)
-	res, err := req.Execute()
-	return wrapError(err, res)
+// Update an application.
+func (application *Application) Update(
+	ctx context.Context,
+	appId string,
+	applicationIn models.ApplicationIn,
+) (*models.ApplicationOut, error) {
+	pathMap := map[string]string{
+		"app_id": appId,
+	}
+	return internal.ExecuteRequest[models.ApplicationIn, models.ApplicationOut](
+		ctx,
+		application.client,
+		"PUT",
+		"/api/v1/app/{app_id}",
+		pathMap,
+		nil,
+		nil,
+		&applicationIn,
+	)
+}
+
+// Delete an application.
+func (application *Application) Delete(
+	ctx context.Context,
+	appId string,
+) error {
+	pathMap := map[string]string{
+		"app_id": appId,
+	}
+	_, err := internal.ExecuteRequest[any, any](
+		ctx,
+		application.client,
+		"DELETE",
+		"/api/v1/app/{app_id}",
+		pathMap,
+		nil,
+		nil,
+		nil,
+	)
+	return err
+}
+
+// Partially update an application.
+func (application *Application) Patch(
+	ctx context.Context,
+	appId string,
+	applicationPatch models.ApplicationPatch,
+) (*models.ApplicationOut, error) {
+	pathMap := map[string]string{
+		"app_id": appId,
+	}
+	return internal.ExecuteRequest[models.ApplicationPatch, models.ApplicationOut](
+		ctx,
+		application.client,
+		"PATCH",
+		"/api/v1/app/{app_id}",
+		pathMap,
+		nil,
+		nil,
+		&applicationPatch,
+	)
 }

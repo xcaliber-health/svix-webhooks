@@ -1,27 +1,26 @@
 name: C# Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Mega Releaser
+    types:
+      - completed
 
 jobs:
   dotnet:
     name: C# Release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    environment: release
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Setup .NET Core SDK
-        uses: actions/setup-dotnet@v1.7.2
+        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: 5.0.x
-
-      - name: Regen openapi libs
-        run: |
-          yarn
-          ./regen_openapi.sh
+          dotnet-version: 8.0.x
 
       - name: Install dependencies
         run: |

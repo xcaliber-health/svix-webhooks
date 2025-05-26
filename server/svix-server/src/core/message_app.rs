@@ -1,13 +1,10 @@
-use std::{
-    collections::HashSet,
-    convert::{TryFrom, TryInto},
-    time::Duration,
-};
+use std::{collections::HashSet, time::Duration};
 
 use chrono::{DateTime, FixedOffset, Utc};
 use sea_orm::{DatabaseConnection, DatabaseTransaction, TransactionTrait};
 use serde::{Deserialize, Serialize};
 
+use super::types::EventTypeName;
 use crate::{
     core::{
         cache::{kv_def, Cache, CacheBehavior, CacheKey, CacheValue},
@@ -17,13 +14,9 @@ use crate::{
             OrganizationId,
         },
     },
-    ctx,
     db::models::{application, endpoint},
-    err_validation,
     error::{Error, Result},
 };
-
-use super::types::EventTypeName;
 
 /// The information cached during the creation of a message. Includes a [`Vec`] of all endpoints
 /// associated with the given application and organization ID.
@@ -33,8 +26,8 @@ pub struct CreateMessageApp {
     pub uid: Option<ApplicationUid>,
     pub org_id: OrganizationId,
     pub rate_limit: Option<u16>,
-    pub endpoints: Vec<CreateMessageEndpoint>,
-    pub deleted: bool,
+    endpoints: Vec<CreateMessageEndpoint>,
+    deleted: bool,
 }
 
 impl CreateMessageApp {
@@ -44,7 +37,9 @@ impl CreateMessageApp {
         db: &DatabaseTransaction,
         app: application::Model,
     ) -> Result<CreateMessageApp> {
-        let endpoints = ctx!(endpoint::Entity::secure_find(app.id.clone()).all(db).await)?
+        let endpoints = endpoint::Entity::secure_find(app.id.clone())
+            .all(db)
+            .await?
             .into_iter()
             .map(TryInto::try_into)
             .collect::<Result<Vec<_>>>()?;
@@ -57,7 +52,7 @@ impl CreateMessageApp {
                 .rate_limit
                 .map(|v| v.try_into())
                 .transpose()
-                .map_err(|_| err_validation!("Application rate limit out of bounds"))?,
+                .map_err(|_| Error::validation("Application rate limit out of bounds"))?,
             endpoints,
             deleted: app.deleted,
         })
@@ -67,7 +62,7 @@ impl CreateMessageApp {
     /// exists or from PostgreSQL otherwise. If the RedisCache is Some, but does not contain the
     /// requisite information, fetch it from PostgreSQL and insert the data into the cache.
     pub async fn layered_fetch(
-        cache: Cache,
+        cache: &Cache,
         pg: &DatabaseConnection,
         app: Option<application::Model>,
         org_id: OrganizationId,
@@ -77,20 +72,23 @@ impl CreateMessageApp {
         let cache_key = AppEndpointKey::new(&org_id, &app_id);
 
         // First check Redis
-        if let Ok(Some(cma)) = cache.get(&cache_key).await {
-            return Ok(Some(cma));
+        if let Ok(Some(cma)) = cache.get::<CreateMessageApp>(&cache_key).await {
+            if cma.deleted {
+                return Ok(None);
+            } else {
+                return Ok(Some(cma));
+            }
         }
 
         // Then check PostgreSQL
-        let db = ctx!(pg.begin().await)?;
+        let db = pg.begin().await?;
         // Fetch the [`application::Model`] either given or from the ID
         let app = if let Some(app) = app {
             app
-        } else if let Some(app) = ctx!(
-            application::Entity::secure_find_by_id(org_id, app_id)
-                .one(&db)
-                .await
-        )? {
+        } else if let Some(app) = application::Entity::secure_find_by_id(org_id, app_id)
+            .one(&db)
+            .await?
+        {
             app
         } else {
             return Ok(None);
@@ -102,6 +100,10 @@ impl CreateMessageApp {
         // Insert it into Redis
         let _ = cache.set(&cache_key, &out, ttl).await;
 
+        if out.deleted {
+            return Ok(None);
+        }
+
         Ok(Some(out))
     }
 
@@ -111,34 +113,35 @@ impl CreateMessageApp {
         event_type: &EventTypeName,
         channels: Option<&EventChannelSet>,
     ) -> Vec<CreateMessageEndpoint> {
-        self
-        .endpoints
-        .iter()
-        .filter(|endpoint| {
-            return
-            // No disabled or deleted endpoints ever
-               !endpoint.disabled && !endpoint.deleted &&
-            (
-                // Manual attempt types go through regardless
-                trigger_type == MessageAttemptTriggerType::Manual
-                || (
-                        // If an endpoint has event types and it matches ours, or has no event types
-                        endpoint
-                        .event_types_ids
-                        .as_ref()
-                        .map(|x| x.0.contains(event_type))
-                        .unwrap_or(true)
-                    &&
-                        // If an endpoint has no channels accept all messages, otherwise only if their channels overlap.
-                        // A message with no channels doesn't match an endpoint with channels.
-                        endpoint
-                        .channels
-                        .as_ref()
-                        .map(|x| !x.0.is_disjoint(channels.map(|x| &x.0).unwrap_or(&HashSet::new())))
-                        .unwrap_or(true)
-            ))})
-        .cloned()
-        .collect()
+        self.endpoints
+            .iter()
+            .filter(|endpoint| {
+                // No disabled or deleted endpoints ever
+                !endpoint.disabled && !endpoint.deleted
+                    // Manual attempt types go through regardless
+                    && (trigger_type == MessageAttemptTriggerType::Manual
+                        || (
+                            // If an endpoint has event types and it matches ours, or has no event types
+                            endpoint
+                                .event_types_ids
+                                .as_ref()
+                                .map(|x| x.0.contains(event_type))
+                                .unwrap_or(true)
+                            // If an endpoint has no channels accept all messages, otherwise only if their channels overlap.
+                            // A message with no channels doesn't match an endpoint with channels.
+                            && endpoint
+                                .channels
+                                .as_ref()
+                                .map(|x| {
+                                    !x.0.is_disjoint(
+                                        channels.map(|x| &x.0).unwrap_or(&HashSet::new()),
+                                    )
+                                })
+                                .unwrap_or(true)
+                        ))
+            })
+            .cloned()
+            .collect()
     }
 }
 
@@ -148,7 +151,6 @@ pub struct CreateMessageEndpoint {
     pub id: EndpointId,
     pub url: String,
     pub key: EndpointSecretInternal,
-    pub old_signing_keys: Option<ExpiringSigningKeys>,
     pub event_types_ids: Option<EventTypeNameSet>,
     pub channels: Option<EventChannelSet>,
     pub rate_limit: Option<u16>,
@@ -157,6 +159,8 @@ pub struct CreateMessageEndpoint {
     pub headers: Option<EndpointHeaders>,
     pub disabled: bool,
     pub deleted: bool,
+    // outside of this module, valid_signing_keys should be used instead
+    old_signing_keys: Option<ExpiringSigningKeys>,
 }
 
 impl CreateMessageEndpoint {
@@ -191,7 +195,7 @@ impl TryFrom<endpoint::Model> for CreateMessageEndpoint {
                 .rate_limit
                 .map(|v| v.try_into())
                 .transpose()
-                .map_err(|_| err_validation!("Endpoint rate limit out of bounds"))?,
+                .map_err(|_| Error::validation("Endpoint rate limit out of bounds"))?,
             first_failure_at: m.first_failure_at,
             headers: m.headers,
             disabled: m.disabled,
@@ -205,15 +209,22 @@ impl AppEndpointKey {
     // FIXME: Rewrite doc comment when AppEndpointValue members are known
     /// Returns a key for fetching all cached endpoints for a given organization and application.
     pub fn new(org: &OrganizationId, app: &ApplicationId) -> AppEndpointKey {
-        AppEndpointKey(format!("{}_APP_v3_{}_{}", Self::PREFIX_CACHE, org, app))
+        AppEndpointKey(format!("SVIX_CACHE_APP_v3_{org}_{app}"))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::core::cryptography::Encryption;
-    use crate::core::types::{EndpointSecret, ExpiringSigningKey};
+    use chrono::Utc;
+
+    use super::CreateMessageEndpoint;
+    use crate::core::{
+        cryptography::Encryption,
+        types::{
+            EndpointId, EndpointSecret, EndpointSecretInternal, ExpiringSigningKey,
+            ExpiringSigningKeys,
+        },
+    };
 
     #[test]
     fn test_valid_signing_keys() {

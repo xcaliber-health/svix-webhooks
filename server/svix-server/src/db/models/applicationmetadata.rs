@@ -1,14 +1,13 @@
 // SPDX-FileCopyrightText: © 2022 Svix Authors
 // SPDX-License-Identifier: MIT
-use crate::core::types::ApplicationId;
 
-use crate::core::types::metadata::Metadata;
-use crate::{ctx, error};
 use chrono::Utc;
-use sea_orm::entity::prelude::*;
-use sea_orm::sea_query::OnConflict;
-use sea_orm::ActiveValue::Set;
-use sea_orm::{ConnectionTrait, TryIntoModel};
+use sea_orm::{entity::prelude::*, sea_query::OnConflict, ActiveValue::Set, TryIntoModel};
+
+use crate::{
+    core::types::{metadata::Metadata, ApplicationId},
+    error,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "applicationmetadata")]
@@ -50,8 +49,12 @@ impl Related<super::application::Entity> for Entity {
     }
 }
 
+#[axum::async_trait]
 impl ActiveModelBehavior for ActiveModel {
-    fn before_save(mut self, _insert: bool) -> Result<Self, DbErr> {
+    async fn before_save<C>(mut self, _db: &C, _insert: bool) -> Result<Self, DbErr>
+    where
+        C: ConnectionTrait,
+    {
         self.updated_at = Set(Utc::now().into());
         Ok(self)
     }
@@ -76,12 +79,12 @@ impl ActiveModel {
         let data = self.data.clone().take().unwrap_or_default();
 
         if data.is_empty() {
-            let model = ctx!(self.clone().try_into_model())?;
-            ctx!(self.delete(db).await)?;
+            let model = self.clone().try_into_model()?;
+            self.delete(db).await?;
             return Ok(model);
         }
 
-        ctx!(Entity::upsert(self).exec_with_returning(db).await)
+        Ok(Entity::upsert(self).exec_with_returning(db).await?)
     }
 }
 

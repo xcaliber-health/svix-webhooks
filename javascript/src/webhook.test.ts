@@ -41,9 +41,11 @@ test("empty key raises error", () => {
     new Webhook("");
   }).toThrowError(Error);
   expect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     new Webhook(undefined as any);
   }).toThrowError(Error);
   expect(() => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     new Webhook(null as any);
   }).toThrowError(Error);
 });
@@ -97,6 +99,23 @@ test("invalid signature throws error", () => {
 
   const testPayload = new TestPayload();
   testPayload.header["svix-signature"] = "v1,dawfeoifkpqwoekfpqoekf";
+
+  expect(() => {
+    wh.verify(testPayload.payload, testPayload.header);
+  }).toThrowError(WebhookVerificationError);
+});
+
+test("partial signature throws error", () => {
+  const wh = new Webhook("MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw");
+
+  const testPayload = new TestPayload();
+  testPayload.header["svix-signature"] = testPayload.header["svix-signature"].slice(0, 8);
+
+  expect(() => {
+    wh.verify(testPayload.payload, testPayload.header);
+  }).toThrowError(WebhookVerificationError);
+
+  testPayload.header["svix-signature"] = "v1,";
 
   expect(() => {
     wh.verify(testPayload.payload, testPayload.header);

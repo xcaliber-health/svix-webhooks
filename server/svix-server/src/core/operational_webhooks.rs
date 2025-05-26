@@ -7,25 +7,27 @@ use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
 use http::StatusCode;
+use schemars::JsonSchema;
 use serde::Serialize;
 use svix::api::{MessageIn, Svix, SvixOptions};
 
 use super::{
-    security::{generate_management_token, Keys},
+    security::generate_management_token,
     types::{
         ApplicationId, ApplicationUid, EndpointId, EndpointUid, MessageAttemptId, MessageId,
         MessageUid, OrganizationId,
     },
 };
 use crate::{
+    core::security::JwtSigningConfig,
     db::models::{endpoint, messageattempt},
-    error::{HttpError, Result},
+    error::{Error, HttpError, Result},
 };
 
 /// Sent when an endpoint has been automatically disabled after continuous failures.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct EndpointDisabledEvent {
+pub struct EndpointDisabledEventData {
     pub app_id: ApplicationId,
     pub app_uid: Option<ApplicationUid>,
     pub endpoint_id: EndpointId,
@@ -34,7 +36,7 @@ pub struct EndpointDisabledEvent {
 }
 
 /// Sent when an endpoint is created, updated, or deleted
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct EndpointEvent {
     pub app_id: ApplicationId,
@@ -54,7 +56,7 @@ impl EndpointEvent {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageAttempetLast {
     pub id: MessageAttemptId,
@@ -75,7 +77,7 @@ impl From<messageattempt::Model> for MessageAttempetLast {
 /// Sent when a message delivery has failed (all of the retry attempts have been exhausted) as a
 /// "message.attempt.exhausted" type or after it's failed four times as a "message.attempt.failing"
 /// event.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MessageAttemptEvent {
     pub app_id: ApplicationId,
@@ -90,7 +92,7 @@ pub struct MessageAttemptEvent {
 #[serde(tag = "type", content = "data")]
 pub enum OperationalWebhook {
     #[serde(rename = "endpoint.disabled")]
-    EndpointDisabled(EndpointDisabledEvent),
+    EndpointDisabled(EndpointDisabledEventData),
     #[serde(rename = "endpoint.created")]
     EndpointCreated(EndpointEvent),
     #[serde(rename = "endpoint.updated")]
@@ -101,18 +103,31 @@ pub enum OperationalWebhook {
     MessageAttemptExhausted(MessageAttemptEvent),
     #[serde(rename = "message.attempt.failing")]
     MessageAttemptFailing(MessageAttemptEvent),
+    #[serde(rename = "message.attempt.recovered")]
+    MessageAttemptRecovered(MessageAttemptEvent),
 }
 
 pub type OperationalWebhookSender = Arc<OperationalWebhookSenderInner>;
 
 pub struct OperationalWebhookSenderInner {
-    keys: Keys,
+    signing_config: Arc<JwtSigningConfig>,
     url: Option<String>,
 }
 
 impl OperationalWebhookSenderInner {
-    pub fn new(keys: Keys, url: Option<String>) -> Arc<Self> {
-        Arc::new(Self { keys, url })
+    pub fn new(keys: Arc<JwtSigningConfig>, mut url: Option<String>) -> Arc<Self> {
+        // Sanitize the URL if present
+        if let Some(url) = &mut url {
+            // Remove trailing slashes
+            while url.ends_with('/') {
+                url.pop();
+            }
+        }
+
+        Arc::new(Self {
+            signing_config: keys,
+            url,
+        })
     }
 
     pub async fn send_operational_webhook(
@@ -120,18 +135,15 @@ impl OperationalWebhookSenderInner {
         recipient_org_id: &OrganizationId,
         payload: OperationalWebhook,
     ) -> Result<()> {
-        let url = match self.url.as_ref() {
-            Some(url) => url,
-            None => return Ok(()),
-        };
+        let Some(url) = &self.url else { return Ok(()) };
 
         let op_webhook_token =
-            generate_management_token(&self.keys).expect("Error generating Svix Management token");
+            generate_management_token(&self.signing_config).map_err(Error::generic)?;
         let svix_api = Svix::new(
             op_webhook_token,
             Some(SvixOptions {
                 server_url: Some(url.to_string()),
-                debug: false,
+                ..Default::default()
             }),
         );
 
@@ -173,7 +185,7 @@ impl OperationalWebhookSenderInner {
                     ..
                 })) => {
                     tracing::warn!(
-                        "Operational webhooks are enabled but no listener set for {}",
+                        "Operational webhooks are enabled, but no listener found for organization {}",
                         recipient_org_id,
                     );
                 }

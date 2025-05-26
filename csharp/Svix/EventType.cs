@@ -1,249 +1,498 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Net;
-using System.Threading;
-using System.Threading.Tasks;
+// this file is @generated
+#nullable enable
 using Microsoft.Extensions.Logging;
-using Svix.Abstractions;
-using Svix.Api;
-using Svix.Client;
-using Svix.Model;
 using Svix.Models;
 
 namespace Svix
 {
-    public sealed class EventType : SvixResourceBase, IEventType
+    public class EventTypeListOptions : SvixOptionsBase
     {
-        private readonly IEventTypeApi _eventTypeApi;
+        public ulong? Limit { get; set; }
+        public string? Iterator { get; set; }
+        public Ordering? Order { get; set; }
+        public bool? IncludeArchived { get; set; }
+        public bool? WithContent { get; set; }
 
-        public EventType(ISvixClient svixClient, IEventTypeApi eventTypeApi)
-            : base(svixClient)
+        public new Dictionary<string, string> QueryParams()
         {
-            _eventTypeApi = eventTypeApi ?? throw new ArgumentNullException(nameof(eventTypeApi));
+            return SerializeParams(
+                new Dictionary<string, object?>
+                {
+                    { "limit", Limit },
+                    { "iterator", Iterator },
+                    { "order", Order },
+                    { "include_archived", IncludeArchived },
+                    { "with_content", WithContent },
+                }
+            );
         }
+    }
 
-        public bool Archive(string eventType, string idempotencyKey = default)
+    public class EventTypeCreateOptions : SvixOptionsBase
+    {
+        public string? IdempotencyKey { get; set; }
+
+        public new Dictionary<string, string> HeaderParams()
+        {
+            return SerializeParams(
+                new Dictionary<string, object?> { { "idempotency-key", IdempotencyKey } }
+            );
+        }
+    }
+
+    public class EventTypeImportOpenapiOptions : SvixOptionsBase
+    {
+        public string? IdempotencyKey { get; set; }
+
+        public new Dictionary<string, string> HeaderParams()
+        {
+            return SerializeParams(
+                new Dictionary<string, object?> { { "idempotency-key", IdempotencyKey } }
+            );
+        }
+    }
+
+    public class EventTypeDeleteOptions : SvixOptionsBase
+    {
+        public bool? Expunge { get; set; }
+
+        public new Dictionary<string, string> QueryParams()
+        {
+            return SerializeParams(new Dictionary<string, object?> { { "expunge", Expunge } });
+        }
+    }
+
+    public class EventType(SvixClient client)
+    {
+        readonly SvixClient _client = client;
+
+        /// <summary>
+        /// Return the list of event types.
+        /// </summary>
+        public async Task<ListResponseEventTypeOut> ListAsync(
+            EventTypeListOptions? options = null,
+            CancellationToken cancellationToken = default
+        )
         {
             try
             {
-                var lResponse = _eventTypeApi.DeleteEventTypeApiV1EventTypeEventTypeNameDeleteWithHttpInfo(
-                    eventType,
-                    idempotencyKey);
-
-                return lResponse.StatusCode == HttpStatusCode.NoContent;
+                var response =
+                    await _client.SvixHttpClient.SendRequestAsync<ListResponseEventTypeOut>(
+                        method: HttpMethod.Get,
+                        path: "/api/v1/event-type",
+                        queryParams: options?.QueryParams(),
+                        headerParams: options?.HeaderParams(),
+                        cancellationToken: cancellationToken
+                    );
+                return response.Data;
             }
             catch (ApiException e)
             {
-                Logger?.LogError(e, $"{nameof(Archive)} failed");
+                _client.Logger?.LogError(e, $"{nameof(ListAsync)} failed");
 
-                if (Throw)
-                    throw;
-
-                return false;
+                throw;
             }
         }
 
-        public async Task<bool> ArchiveAsync(string eventType, string idempotencyKey = default, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Return the list of event types.
+        /// </summary>
+        public ListResponseEventTypeOut List(EventTypeListOptions? options = null)
         {
             try
             {
-                var lResponse = await _eventTypeApi.DeleteEventTypeApiV1EventTypeEventTypeNameDeleteWithHttpInfoAsync(
-                    eventType,
-                    idempotencyKey,
-                    cancellationToken);
-
-                return lResponse.StatusCode == HttpStatusCode.NoContent;
+                var response = _client.SvixHttpClient.SendRequest<ListResponseEventTypeOut>(
+                    method: HttpMethod.Get,
+                    path: "/api/v1/event-type",
+                    queryParams: options?.QueryParams(),
+                    headerParams: options?.HeaderParams()
+                );
+                return response.Data;
             }
             catch (ApiException e)
             {
-                Logger?.LogError(e, $"{nameof(ArchiveAsync)} failed");
+                _client.Logger?.LogError(e, $"{nameof(List)} failed");
 
-                if (Throw)
-                    throw;
-
-                return false;
+                throw;
             }
         }
 
-        public EventTypeOut Create(EventTypeIn eventType, string idempotencyKey = default)
+        /// <summary>
+        /// Create new or unarchive existing event type.
+        ///
+        /// Unarchiving an event type will allow endpoints to filter on it and messages to be sent with it.
+        /// Endpoints filtering on the event type before archival will continue to filter on it.
+        /// This operation does not preserve the description and schemas.
+        /// </summary>
+        public async Task<EventTypeOut> CreateAsync(
+            EventTypeIn eventTypeIn,
+            EventTypeCreateOptions? options = null,
+            CancellationToken cancellationToken = default
+        )
         {
+            eventTypeIn = eventTypeIn ?? throw new ArgumentNullException(nameof(eventTypeIn));
             try
             {
-                var lEventType = _eventTypeApi.CreateEventTypeApiV1EventTypePost(
-                    eventType,
-                    idempotencyKey);
-
-                return lEventType;
+                var response = await _client.SvixHttpClient.SendRequestAsync<EventTypeOut>(
+                    method: HttpMethod.Post,
+                    path: "/api/v1/event-type",
+                    queryParams: options?.QueryParams(),
+                    headerParams: options?.HeaderParams(),
+                    content: eventTypeIn,
+                    cancellationToken: cancellationToken
+                );
+                return response.Data;
             }
             catch (ApiException e)
             {
-                Logger?.LogError(e, $"{nameof(Create)} failed");
+                _client.Logger?.LogError(e, $"{nameof(CreateAsync)} failed");
 
-                if (Throw)
-                    throw;
-
-                return null;
+                throw;
             }
         }
 
-        public async Task<EventTypeOut> CreateAsync(EventTypeIn eventType, string idempotencyKey = default, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Create new or unarchive existing event type.
+        ///
+        /// Unarchiving an event type will allow endpoints to filter on it and messages to be sent with it.
+        /// Endpoints filtering on the event type before archival will continue to filter on it.
+        /// This operation does not preserve the description and schemas.
+        /// </summary>
+        public EventTypeOut Create(EventTypeIn eventTypeIn, EventTypeCreateOptions? options = null)
         {
+            eventTypeIn = eventTypeIn ?? throw new ArgumentNullException(nameof(eventTypeIn));
             try
             {
-                var lEventType = await _eventTypeApi.CreateEventTypeApiV1EventTypePostAsync(
-                    eventType,
-                    idempotencyKey,
-                    cancellationToken);
-
-                return lEventType;
+                var response = _client.SvixHttpClient.SendRequest<EventTypeOut>(
+                    method: HttpMethod.Post,
+                    path: "/api/v1/event-type",
+                    queryParams: options?.QueryParams(),
+                    headerParams: options?.HeaderParams(),
+                    content: eventTypeIn
+                );
+                return response.Data;
             }
             catch (ApiException e)
             {
-                Logger?.LogError(e, $"{nameof(CreateAsync)} failed");
+                _client.Logger?.LogError(e, $"{nameof(Create)} failed");
 
-                if (Throw)
-                    throw;
-
-                return null;
+                throw;
             }
         }
 
-        public EventTypeOut Get(string eventType, string idempotencyKey = default)
+        /// <summary>
+        /// Given an OpenAPI spec, create new or update existing event types.
+        /// If an existing `archived` event type is updated, it will be unarchived.
+        ///
+        /// The importer will convert all webhooks found in the either the `webhooks` or `x-webhooks`
+        /// top-level.
+        /// </summary>
+        public async Task<EventTypeImportOpenApiOut> ImportOpenapiAsync(
+            EventTypeImportOpenApiIn eventTypeImportOpenApiIn,
+            EventTypeImportOpenapiOptions? options = null,
+            CancellationToken cancellationToken = default
+        )
         {
+            eventTypeImportOpenApiIn =
+                eventTypeImportOpenApiIn
+                ?? throw new ArgumentNullException(nameof(eventTypeImportOpenApiIn));
             try
             {
-                var lEventType = _eventTypeApi.GetEventTypeApiV1EventTypeEventTypeNameGet(
-                    eventType,
-                    idempotencyKey);
-
-                return lEventType;
+                var response =
+                    await _client.SvixHttpClient.SendRequestAsync<EventTypeImportOpenApiOut>(
+                        method: HttpMethod.Post,
+                        path: "/api/v1/event-type/import/openapi",
+                        queryParams: options?.QueryParams(),
+                        headerParams: options?.HeaderParams(),
+                        content: eventTypeImportOpenApiIn,
+                        cancellationToken: cancellationToken
+                    );
+                return response.Data;
             }
             catch (ApiException e)
             {
-                Logger?.LogError(e, $"{nameof(Get)} failed");
+                _client.Logger?.LogError(e, $"{nameof(ImportOpenapiAsync)} failed");
 
-                if (Throw)
-                    throw;
-
-                return null;
+                throw;
             }
         }
 
-        public async Task<EventTypeOut> GetAsync(string eventType, string idempotencyKey = default, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Given an OpenAPI spec, create new or update existing event types.
+        /// If an existing `archived` event type is updated, it will be unarchived.
+        ///
+        /// The importer will convert all webhooks found in the either the `webhooks` or `x-webhooks`
+        /// top-level.
+        /// </summary>
+        public EventTypeImportOpenApiOut ImportOpenapi(
+            EventTypeImportOpenApiIn eventTypeImportOpenApiIn,
+            EventTypeImportOpenapiOptions? options = null
+        )
         {
+            eventTypeImportOpenApiIn =
+                eventTypeImportOpenApiIn
+                ?? throw new ArgumentNullException(nameof(eventTypeImportOpenApiIn));
             try
             {
-                var lEventType = await _eventTypeApi.GetEventTypeApiV1EventTypeEventTypeNameGetAsync(
-                    eventType,
-                    idempotencyKey,
-                    cancellationToken);
-
-                return lEventType;
+                var response = _client.SvixHttpClient.SendRequest<EventTypeImportOpenApiOut>(
+                    method: HttpMethod.Post,
+                    path: "/api/v1/event-type/import/openapi",
+                    queryParams: options?.QueryParams(),
+                    headerParams: options?.HeaderParams(),
+                    content: eventTypeImportOpenApiIn
+                );
+                return response.Data;
             }
             catch (ApiException e)
             {
-                Logger?.LogError(e, $"{nameof(GetAsync)} failed");
+                _client.Logger?.LogError(e, $"{nameof(ImportOpenapi)} failed");
 
-                if (Throw)
-                    throw;
-
-                return null;
+                throw;
             }
         }
 
-        public List<EventTypeOut> List(EventTypeListOptions options = null, string idempotencyKey = default)
+        /// <summary>
+        /// Get an event type.
+        /// </summary>
+        public async Task<EventTypeOut> GetAsync(
+            string eventTypeName,
+            CancellationToken cancellationToken = default
+        )
         {
             try
             {
-                var lResults = _eventTypeApi.ListEventTypesApiV1EventTypeGet(
-                    options?.Iterator,
-                    options?.Limit,
-                    options?.WithContent,
-                    options?.IncludeArchived,
-                    idempotencyKey);
-
-                return lResults?.Data;
+                var response = await _client.SvixHttpClient.SendRequestAsync<EventTypeOut>(
+                    method: HttpMethod.Get,
+                    path: "/api/v1/event-type/{event_type_name}",
+                    pathParams: new Dictionary<string, string>
+                    {
+                        { "event_type_name", eventTypeName },
+                    },
+                    cancellationToken: cancellationToken
+                );
+                return response.Data;
             }
             catch (ApiException e)
             {
-                Logger?.LogError(e, $"{nameof(List)} failed");
+                _client.Logger?.LogError(e, $"{nameof(GetAsync)} failed");
 
-                if (Throw)
-                    throw;
-
-                return new List<EventTypeOut>();
+                throw;
             }
         }
 
-        public async Task<List<EventTypeOut>> ListAsync(EventTypeListOptions options = null, string idempotencyKey = default,
-            CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Get an event type.
+        /// </summary>
+        public EventTypeOut Get(string eventTypeName)
         {
             try
             {
-                var lResults = await _eventTypeApi.ListEventTypesApiV1EventTypeGetAsync(
-                    options?.Iterator,
-                    options?.Limit,
-                    options?.WithContent,
-                    options?.IncludeArchived,
-                    idempotencyKey,
-                    cancellationToken);
-
-                return lResults?.Data;
+                var response = _client.SvixHttpClient.SendRequest<EventTypeOut>(
+                    method: HttpMethod.Get,
+                    path: "/api/v1/event-type/{event_type_name}",
+                    pathParams: new Dictionary<string, string>
+                    {
+                        { "event_type_name", eventTypeName },
+                    }
+                );
+                return response.Data;
             }
             catch (ApiException e)
             {
-                Logger?.LogError(e, $"{nameof(ListAsync)} failed");
+                _client.Logger?.LogError(e, $"{nameof(Get)} failed");
 
-                if (Throw)
-                    throw;
-
-                return new List<EventTypeOut>();
+                throw;
             }
         }
 
-        public EventTypeOut Update(string eventType, EventTypeUpdate update, string idempotencyKey = default)
+        /// <summary>
+        /// Update an event type.
+        /// </summary>
+        public async Task<EventTypeOut> UpdateAsync(
+            string eventTypeName,
+            EventTypeUpdate eventTypeUpdate,
+            CancellationToken cancellationToken = default
+        )
         {
+            eventTypeUpdate =
+                eventTypeUpdate ?? throw new ArgumentNullException(nameof(eventTypeUpdate));
             try
             {
-                var lEventType = _eventTypeApi.UpdateEventTypeApiV1EventTypeEventTypeNamePut(
-                    eventType,
-                    update,
-                    idempotencyKey);
-
-                return lEventType;
+                var response = await _client.SvixHttpClient.SendRequestAsync<EventTypeOut>(
+                    method: HttpMethod.Put,
+                    path: "/api/v1/event-type/{event_type_name}",
+                    pathParams: new Dictionary<string, string>
+                    {
+                        { "event_type_name", eventTypeName },
+                    },
+                    content: eventTypeUpdate,
+                    cancellationToken: cancellationToken
+                );
+                return response.Data;
             }
             catch (ApiException e)
             {
-                Logger?.LogError(e, $"{nameof(Update)} failed");
+                _client.Logger?.LogError(e, $"{nameof(UpdateAsync)} failed");
 
-                if (Throw)
-                    throw;
-
-                return null;
+                throw;
             }
         }
 
-        public async Task<EventTypeOut> UpdateAsync(string eventType, EventTypeUpdate update, string idempotencyKey = default,
-            CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Update an event type.
+        /// </summary>
+        public EventTypeOut Update(string eventTypeName, EventTypeUpdate eventTypeUpdate)
         {
+            eventTypeUpdate =
+                eventTypeUpdate ?? throw new ArgumentNullException(nameof(eventTypeUpdate));
             try
             {
-                var lEventType = await _eventTypeApi.UpdateEventTypeApiV1EventTypeEventTypeNamePutAsync(
-                    eventType,
-                    update,
-                    idempotencyKey,
-                    cancellationToken);
-
-                return lEventType;
+                var response = _client.SvixHttpClient.SendRequest<EventTypeOut>(
+                    method: HttpMethod.Put,
+                    path: "/api/v1/event-type/{event_type_name}",
+                    pathParams: new Dictionary<string, string>
+                    {
+                        { "event_type_name", eventTypeName },
+                    },
+                    content: eventTypeUpdate
+                );
+                return response.Data;
             }
             catch (ApiException e)
             {
-                Logger?.LogError(e, $"{nameof(UpdateAsync)} failed");
+                _client.Logger?.LogError(e, $"{nameof(Update)} failed");
 
-                if (Throw)
-                    throw;
+                throw;
+            }
+        }
 
-                return null;
+        /// <summary>
+        /// Archive an event type.
+        ///
+        /// Endpoints already configured to filter on an event type will continue to do so after archival.
+        /// However, new messages can not be sent with it and endpoints can not filter on it.
+        /// An event type can be unarchived with the
+        /// [create operation](#operation/create_event_type_api_v1_event_type__post).
+        /// </summary>
+        public async Task<bool> DeleteAsync(
+            string eventTypeName,
+            EventTypeDeleteOptions? options = null,
+            CancellationToken cancellationToken = default
+        )
+        {
+            try
+            {
+                var response = await _client.SvixHttpClient.SendRequestAsync<bool>(
+                    method: HttpMethod.Delete,
+                    path: "/api/v1/event-type/{event_type_name}",
+                    pathParams: new Dictionary<string, string>
+                    {
+                        { "event_type_name", eventTypeName },
+                    },
+                    queryParams: options?.QueryParams(),
+                    headerParams: options?.HeaderParams(),
+                    cancellationToken: cancellationToken
+                );
+                return response.Data;
+            }
+            catch (ApiException e)
+            {
+                _client.Logger?.LogError(e, $"{nameof(DeleteAsync)} failed");
+
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Archive an event type.
+        ///
+        /// Endpoints already configured to filter on an event type will continue to do so after archival.
+        /// However, new messages can not be sent with it and endpoints can not filter on it.
+        /// An event type can be unarchived with the
+        /// [create operation](#operation/create_event_type_api_v1_event_type__post).
+        /// </summary>
+        public bool Delete(string eventTypeName, EventTypeDeleteOptions? options = null)
+        {
+            try
+            {
+                var response = _client.SvixHttpClient.SendRequest<bool>(
+                    method: HttpMethod.Delete,
+                    path: "/api/v1/event-type/{event_type_name}",
+                    pathParams: new Dictionary<string, string>
+                    {
+                        { "event_type_name", eventTypeName },
+                    },
+                    queryParams: options?.QueryParams(),
+                    headerParams: options?.HeaderParams()
+                );
+                return response.Data;
+            }
+            catch (ApiException e)
+            {
+                _client.Logger?.LogError(e, $"{nameof(Delete)} failed");
+
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Partially update an event type.
+        /// </summary>
+        public async Task<EventTypeOut> PatchAsync(
+            string eventTypeName,
+            EventTypePatch eventTypePatch,
+            CancellationToken cancellationToken = default
+        )
+        {
+            eventTypePatch =
+                eventTypePatch ?? throw new ArgumentNullException(nameof(eventTypePatch));
+            try
+            {
+                var response = await _client.SvixHttpClient.SendRequestAsync<EventTypeOut>(
+                    method: HttpMethod.Patch,
+                    path: "/api/v1/event-type/{event_type_name}",
+                    pathParams: new Dictionary<string, string>
+                    {
+                        { "event_type_name", eventTypeName },
+                    },
+                    content: eventTypePatch,
+                    cancellationToken: cancellationToken
+                );
+                return response.Data;
+            }
+            catch (ApiException e)
+            {
+                _client.Logger?.LogError(e, $"{nameof(PatchAsync)} failed");
+
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Partially update an event type.
+        /// </summary>
+        public EventTypeOut Patch(string eventTypeName, EventTypePatch eventTypePatch)
+        {
+            eventTypePatch =
+                eventTypePatch ?? throw new ArgumentNullException(nameof(eventTypePatch));
+            try
+            {
+                var response = _client.SvixHttpClient.SendRequest<EventTypeOut>(
+                    method: HttpMethod.Patch,
+                    path: "/api/v1/event-type/{event_type_name}",
+                    pathParams: new Dictionary<string, string>
+                    {
+                        { "event_type_name", eventTypeName },
+                    },
+                    content: eventTypePatch
+                );
+                return response.Data;
+            }
+            catch (ApiException e)
+            {
+                _client.Logger?.LogError(e, $"{nameof(Patch)} failed");
+
+                throw;
             }
         }
     }

@@ -1,27 +1,31 @@
 name: Ruby Lint
 
-on: 
+on:
   pull_request:
     paths:
       - "ruby/**"
+      - "lib-openapi.json"
+      - '.github/workflows/ruby-lint.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - "ruby/**"
+      - "lib-openapi.json"
+      - '.github/workflows/ruby-lint.yml'
 
 jobs:
   dotnet:
     name: Ruby Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Setup Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: 2.7
-
-      - name: Regen openapi libs
-        run: |
-          yarn
-          ./regen_openapi.sh
+          ruby-version: 3.4.2
 
       - name: Install dependencies
         run: |
@@ -32,3 +36,8 @@ jobs:
         run: |
           cd ruby
           bundler exec rake build
+
+      - name: Test
+        run: |
+          cd ruby
+          bundler exec rspec spec

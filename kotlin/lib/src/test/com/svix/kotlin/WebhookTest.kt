@@ -11,7 +11,6 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 class WebhookTest {
-
     @Test
     fun verifyValidPayloadAndheader() {
         val testPayload = TestPayload(System.currentTimeMillis())
@@ -34,12 +33,14 @@ class WebhookTest {
     @Test
     fun verifyValidPayloadWithMultipleSignaturesIsValid() {
         val testPayload = TestPayload(System.currentTimeMillis())
-        val sigs = arrayOf(
-            "v1,Ceo5qEr07ixe2NLpvHk3FH9bwy/WavXrAFQ/9tdO6mc=",
-            "v2,Ceo5qEr07ixe2NLpvHk3FH9bwy/WavXrAFQ/9tdO6mc=",
-            testPayload.headerMap["svix-signature"]!![0], // valid signature
-            "v1,Ceo5qEr07ixe2NLpvHk3FH9bwy/WavXrAFQ/9tdO6mc="
-        )
+        val sigs =
+            arrayOf(
+                "v1,Ceo5qEr07ixe2NLpvHk3FH9bwy/WavXrAFQ/9tdO6mc=",
+                "v2,Ceo5qEr07ixe2NLpvHk3FH9bwy/WavXrAFQ/9tdO6mc=",
+                // valid signature
+                testPayload.headerMap["svix-signature"]!![0],
+                "v1,Ceo5qEr07ixe2NLpvHk3FH9bwy/WavXrAFQ/9tdO6mc=",
+            )
         testPayload.headerMap["svix-signature"] = ArrayList(listOf(sigs.joinToString(" ")))
         val webhook = Webhook(testPayload.secret)
         webhook.verify(testPayload.payload, testPayload.headers())
@@ -49,86 +50,55 @@ class WebhookTest {
     fun verifyMissingIdThrowsException() {
         val testPayload = TestPayload(System.currentTimeMillis())
         testPayload.headerMap.remove("svix-id")
-        assertFailsWith<WebhookVerificationException>(
-            block = {
-                verify(testPayload)
-            }
-        )
+        assertFailsWith<WebhookVerificationException>(block = { verify(testPayload) })
     }
 
     @Test
     fun verifyMissingTimestampThrowsException() {
         val testPayload = TestPayload(System.currentTimeMillis())
         testPayload.headerMap.remove("svix-timestamp")
-        assertFailsWith<WebhookVerificationException>(
-            block = {
-                verify(testPayload)
-            }
-        )
+        assertFailsWith<WebhookVerificationException>(block = { verify(testPayload) })
     }
 
     @Test
     fun verifyMissingSignatureThrowsException() {
         val testPayload = TestPayload(System.currentTimeMillis())
         testPayload.headerMap.remove("svix-signature")
-        assertFailsWith<WebhookVerificationException>(
-            block = {
-                verify(testPayload)
-            }
-        )
+        assertFailsWith<WebhookVerificationException>(block = { verify(testPayload) })
     }
 
     @Test
     fun verifySignatureWithDifferentVersionThrowsException() {
         val testPayload = TestPayload(System.currentTimeMillis())
-        testPayload.headerMap[Webhook.SVIX_MSG_ID_KEY] = ArrayList(listOf("v2,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE="))
-        assertFailsWith<WebhookVerificationException>(
-            block = {
-                verify(testPayload)
-            }
-        )
+        testPayload.headerMap[Webhook.SVIX_MSG_ID_KEY] =
+            ArrayList(listOf("v2,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE="))
+        assertFailsWith<WebhookVerificationException>(block = { verify(testPayload) })
     }
 
     @Test
     fun verifyMissingPartsInSignatureThrowsException() {
         val testPayload = TestPayload(System.currentTimeMillis())
         testPayload.headerMap[Webhook.SVIX_MSG_ID_KEY] = ArrayList(listOf("invalid_signature"))
-        assertFailsWith<WebhookVerificationException>(
-            block = {
-                verify(testPayload)
-            }
-        )
+        assertFailsWith<WebhookVerificationException>(block = { verify(testPayload) })
     }
 
     @Test
     fun verifySignatureMismatchThrowsException() {
         val testPayload = TestPayload(System.currentTimeMillis())
         testPayload.headerMap[Webhook.SVIX_MSG_ID_KEY] = ArrayList(listOf("v1,invalid_signature"))
-        assertFailsWith<WebhookVerificationException>(
-            block = {
-                verify(testPayload)
-            }
-        )
+        assertFailsWith<WebhookVerificationException>(block = { verify(testPayload) })
     }
 
     @Test
     fun verifyOldTimestampThrowsException() {
         val testPayload = TestPayload(System.currentTimeMillis() + TOLERANCE_IN_MS + SECOND_IN_MS)
-        assertFailsWith<WebhookVerificationException>(
-            block = {
-                verify(testPayload)
-            }
-        )
+        assertFailsWith<WebhookVerificationException>(block = { verify(testPayload) })
     }
 
     @Test
     fun verifyNewTimestampThrowsException() {
         val testPayload = TestPayload(System.currentTimeMillis() - TOLERANCE_IN_MS - SECOND_IN_MS)
-        assertFailsWith<WebhookVerificationException>(
-            block = {
-                verify(testPayload)
-            }
-        )
+        assertFailsWith<WebhookVerificationException>(block = { verify(testPayload) })
     }
 
     @Test
@@ -136,7 +106,8 @@ class WebhookTest {
         val testPayload = TestPayload(System.currentTimeMillis())
         var webhook = Webhook(testPayload.secret)
         webhook.verify(testPayload.payload, testPayload.headers())
-        webhook = Webhook(java.lang.String.format("%s%s", Webhook.SECRET_PREFIX, testPayload.secret))
+        webhook =
+            Webhook(java.lang.String.format("%s%s", Webhook.SECRET_PREFIX, testPayload.secret))
         webhook.verify(testPayload.payload, testPayload.headers())
     }
 
@@ -164,6 +135,7 @@ class WebhookTest {
         val secret: String
         private var signature: String? = null
         var headerMap: HashMap<String, ArrayList<String>>
+
         fun headers(): HttpHeaders {
             val map = HashMap<String, List<String>>()
             for ((key, value) in headerMap) {
@@ -181,7 +153,8 @@ class WebhookTest {
                 val sha512Hmac: Mac = Mac.getInstance("HmacSHA256")
                 val keySpec = SecretKeySpec(Base64.getDecoder().decode(secret), "HmacSHA256")
                 sha512Hmac.init(keySpec)
-                val macData: ByteArray = sha512Hmac.doFinal(toSign.toByteArray(StandardCharsets.UTF_8))
+                val macData: ByteArray =
+                    sha512Hmac.doFinal(toSign.toByteArray(StandardCharsets.UTF_8))
                 signature = Base64.getEncoder().encodeToString(macData)
             } catch (e: Exception) {
                 // pass

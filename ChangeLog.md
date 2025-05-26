@@ -1,7 +1,537 @@
 # Changelog
 
-## Next
-* 
+## Unreleased
+
+## Version 1.66.0
+* Libs/JavaScript: Fix response processing code for endpoints with an optional datetime field in the response body
+* Libs/PHP: Update minimum version of PHP to 8.0
+* Server: Support sending raw (pre-formatted) JSON payloads
+
+## Version 1.65.0
+* Libs/Python: Bring back the (deprecated) sync `dashboard_access` method, which was accidentally
+  removed in v1.64.1
+* Libs/Csharp: The `options` argument to the `SvixClient` initializer is now optional.
+* Libs/Csharp: The `SvixOptions.BaseUrl` field is deprecated in favor of `SvixOptions.ServerUrl`
+* Libs/(Ruby and Kotlin): Add doc comments to class attributes
+* Libs/Go: Added a new `<Enum>From<UnderlyingType>` map to all enums. For example `BackgroundTaskStatusFromString["running"]` will result in `BACKGROUNDTASKSTATUS_RUNNING`
+* Libs/Go: Fixed bug where the correct `content-type` was not set on `PUT` requests
+* Bridge: Add `/health` endpoint by @CodeMan62 in https://github.com/svix/svix-webhooks/pull/1903
+* Server: Add URL validation to operational server webhooks by @CodeMan62 in https://github.com/svix/svix-webhooks/pull/1887
+
+## Version 1.64.1
+* Libs/JavaScript: Add `HTTPValidationError`, `HttpErrorOut`, `ValidationError` and `ApiException` to the top level exports.
+* Server: Add response duration tracking to webhook message attempts by @CodeMan62 in https://github.com/svix/svix-webhooks/pull/1877
+* Libs/Python: Specify minimum version of pydantic `pydantic >=2.10` in setup.py.
+
+## Version 1.64.0
+* CLI: Add interactive login with dashboard.svix.com
+
+## Version 1.63.2
+* Libs/JavaScript: Fix deserialization for optional arrays
+* Libs/Python: Fix minimum version requirement for pydantic
+
+## Version 1.63.1
+* Libs/Python: Removed internal use of `match` statement, allowing python versions older than 3.10 to be used
+
+## Version 1.63.0
+* Libs, Cli: New Ingest source and Ingest endpoint APIs are now available.
+* Libs: New environment APIs (import, export) are now available.
+* Libs/Ruby: Fix bug causing `application.get_or_create` to raise a `TypeError`
+
+## Version 1.62.0
+* Libs/Python: The client will now reuse the same httpx Client across api calls
+
+## Version 1.61.4
+* Libs/(C#,Java,Kotlin,Rust): The type of `BackgroundTaskFinishedEvent2.data` changed from `Data` (a custom type) to `Object`(Java C#), `serde_json::Value`(Rust), `Map<String, Any>`(Kotlin)
+
+## Version 1.61.3
+* Libs/Javascript: Fix bug where a missing content-type header would cause some requests to fail
+
+## Version 1.61.2
+* Libs/Java and Libs/Kotlin: Fix bug introduced in v1.61.1, where `message.create` would return 422 on all requests
+
+## Version 1.61.1
+* Libs/Java **(Breaking)**: The type of `MessageIn.transformationsParams` changed from `Object` to  `Map<String,Object>`.
+* Libs/Java and Libs/Kotlin **(Breaking)**: Due to an internal change in the underlining JSON de/serialization library, some JSON objects may not be serialized correctly. To address this `MessageIn.payload` now accepts a JSON encoded string instead of an `Object` (for Java) or `Map<String, Any>` (for Kotlin)
+* Libs/Go: Fix regression in Go lib, operations now return `&svix.Error` instead of `svix.Error`
+
+## Version 1.61.0
+* Libs/Ruby **(Breaking)**: Ruby version changed from `2.7` to `3.4.2`
+* Libs/Ruby **(Breaking)**: Deprecated methods `MessageAttempt.list` and `MessageAttempt.list_attempts_for_endpoint` are removed
+
+## Version 1.60.1
+* Libs/Javascript: Fix regression causing json deserialization to throw exception in a few edge cases
+
+## Version 1.60.0
+* Libs/Java **(Breaking)**: All uses of `ListOptions`/`PostOptions` are removed, and renamed to `{Resource}{Operation}Options`. For example in `Endpoint.List` you would now use `EndpointListOptions`
+* Libs/Java **(Breaking)**: Deprecated methods `MessageAttempt.list` and `MessageAttempt.listAttemptsForEndpoint` are removed
+
+## Version 1.59.2
+* Libs/Go: Fixed regression where go >= 1.23 was needed, now Go >= 1.21 is supported
+
+## Version 1.59.1
+* Libs/JavaScript: Fixed regression introduced in version 1.59.0, types are now correctly exported
+
+## Version 1.59.0
+* Libs/Kotlin **(VERY IMPORTANT)**: The parameter order `appId` and `msgId` were swapped on `Message.get` and `Message.expungeContent`
+* Libs/Kotlin **(Breaking)**: All uses of `ListOptions`/`PostOptions` are removed, and renamed to `{Resource}{Operation}Options`. For example in `Endpoint.List` you would now use `EndpointListOptions`
+* Libs/Kotlin **(Breaking)**: In the 4 `*Patch` patch models, nullable fields are of type `MaybeUnset<T>` instead of `T`. call `MaybeUnset.Present(val)` to initialize this value
+* Libs/Kotlin **(Breaking)**: `SvixOptions` no longer has `initialRetryDelayMillis` or `numRetries` instead use `retrySchedule`
+* Libs/Kotlin **(Breaking)**: All `{Resource}{Operation}Options` and model classes (`ApplicationIn`/`MessageOut`) are now data classes
+* Libs/Kotlin **(Breaking)**: Deprecated functions `MessageAttempt.list` and `MessageAttempt.listAttemptsForEndpoint` are removed
+* Libs/Kotlin **(Breaking)**: All uses of `java.time.OffsetDateTime` replaced with `kotlinx.datetime.Instant`
+* Libs/Kotlin **(Breaking)**: All uses of `java.net.URL` in request/response models are replaced with `String`
+* Libs/JavaScript **(Breaking)**: Removed non-public `endpoint.oauthUpdate` and `endpoint.oauthDelete` operations.
+* Libs/JavaScript **(Breaking)**: Removed deprecated operation `MessageAttempt.list`
+* Libs/JavaScript **(Breaking)**: Exceptions and models are no longer exported from `webhook.ts`, import them from `index.ts` instead
+
+## Version 1.58.2
+* Libs/Go: New `Message.ExpungeContent` is now available
+* Libs/Go: Fix regression introduced in version `1.58.0`. All models are now exported from the `svix` package.
+* Libs/Go: Fix regression introduced in version `1.58.0`. Nullable fields are now `*T` instead of `T`, this affects `ListResponseXXXOut.Iterator`
+
+## Version 1.58.1
+* Libs/Go: Fix a null-pointer deference regression introduced in previous version.
+
+## Version 1.58.0
+* Libs/Rust: Fix regression in previous version. Nullable fields are now `Option<T>` instead of `T`, this affects `ListResponseXXXOut.iterator` and `EnvironmentOut.settings`
+
+## Version 1.57.0
+This version contains a big overhaul of the client libraries, with improved typing.
+
+* Libs/Go: Add `Authentication.ExpireAll` (and `ExpireAllWithOptions`)
+* Libs/Go **(Breaking)**: Excluding specific fields on the *Patch models (`ApplicationPatch` for example), all `Nullable{Type}` removed from the models
+* Libs/Go **(Breaking)**: All `Nullable{Type}` (for example `NullableString`) are replaced with a new generic `Nullable[T]` type, the new type can be imported from `github.com/svix/svix-webhooks/go/utils`
+* Libs/Go **(Breaking)**: All custom model types are now imported from `github.com/svix/svix-webhooks/go/models` instead of `github.com/svix/svix-webhooks/go`
+* Libs/Go **(Breaking)**: All `-WithOptions` methods are now removed. Their regular counterparts now take a pointer to an Options type which can be nil when not needed. For example in `Endpoint.RecoverWithOptions` is now `Endpoint.Recover`
+
+* Libs/C# and Libs/Go **(Breaking)**: All uses of `ListOptions`/`PostOptions` are removed, and renamed to `{Resource}{Operation}Options`. For example in `Endpoint.List` you would now use `EndpointListOptions`
+* Libs/C# **(Breaking)**: All `IdempotencyKey` method parameters are removed, and are now part of `{Resource}{Operation}Options`. For example in `Message.Create`; to the use `IdempotencyKey`, simply pass it in the `MessageCreateOptions`
+* Libs/C# **(Breaking)**: The `Throw` parameter is removed from `SvixOptions`
+* Libs/C# **(Breaking)**: All redundant interfaces along with the `Svix.Abstractions` namespace are removed
+* Libs/C# **(Breaking)**: The `Svix.Model` and `Svix.Models` namespaces are now merged into a single `Svix.Models` namespace
+* Libs/C# **(Breaking)**: The `Svix.Client` namespace is removed, The `SvixClient` class can now be found in the `Svix` namespace
+
+* Libs/Python **(Breaking)**: `PostOptions` and `ListOptions` are no longer used in methods for `Authentication`,`Endpoint`,`EventType`,`Integration`,`MessageAttempt`,`Message`, `Statistics` and `OperationalWebhookEndpoint` resources. Instead each API call now has its own `{Resource}{Operation}Options`. (Both sync and async)
+* Libs/Python: In `Application` the `dashboard_access` method is deprecated in favor of `app_portal_access`. (Both sync and async)
+* Libs/Python **(Breaking)**: `EndpointStatsOptions` is renamed to `EndpointGetStatsOptions`
+* Libs/Python **(Breaking)**: `MessageAttemptListOptions` is removed in favor of call specific `{Resource}{Operation}Options`
+* Libs/Python **(Breaking)**: For `Statistics` in the `aggregate_event_types` method the `task_id` parameter is removed, Please note that previously this parameter was ignored and had no affect (Both sync and async)
+
+* Libs/Kotlin **(Breaking)**: Update `recover` to return `RecoverOut` (instead of nothing)
+* Libs/Kotlin **(Breaking)**: Update `replayMissing` to return `ReplayOut` (instead of nothing)
+* Libs/Kotlin **(Breaking)**: Update `sendExample` to return `MessageOut` (instead of nothing)
+* Libs/Kotlin **(Breaking)**: Update `MessageAttempt` list methods to each have its own type for
+  list options, since they don't all support the exact same set of parameters and some of the
+  parameters that could be set before would just get ignored
+* Libs/Kotlin: Fix a bug in `EventType.list` where `options.order` was not getting honored
+
+* Libs/Rust **(Breaking)**: Add optional `EventTypeDeleteOptions` parameter to `EventType::delete`
+* Libs/Rust **(Breaking)**: Add optional `options` parameters to `Endpoint::recover`,
+  `Endpoint::rotate_secret`, `Integration::rotate_key` and `MessageAttempt::resend`
+* Libs/Rust **(Breaking)**: Remove model files that were not referenced by any operations available
+  through the `Svix` object
+* Libs/Rust **(Breaking)**: Switch `Patch` struct fields from `Option<Option<T>>` to
+  `js_option::JsOption<T>`
+* Libs/Rust **(Breaking)**: Change `rate_limit` from `i32` to `u16` in several places
+* Libs/Rust **(Breaking)**: Remove `settings` parameter from `EnvironmentIn::new`
+* Libs/Rust **(Breaking)**: Replace `PostOptions` with operation-specific options structs
+* Libs/Rust **(Breaking)**: Remove `Period` from `BackgroundTaskType` variant names; this was introduced by accident a few releases ago
+
+## Version 1.56.0
+* Skipping versions: we had an issue with our CI that created duplicated Go
+  library releases and forced us to bump the version across the libs and the
+  server. Apologies for any inconvenience caused.
+* Libs/Go: retracts several versions which were tagged prematurely. Apologies!
+
+## Version 1.45.1
+* CLI: Rename the binary back from `svix-cli` to `svix`
+* Libs/Java: Stop sharing one `ApiClient` between all `Svix` instances. Fixes a bug where multiple
+  independently instantiated `Svix` instances would always use the same base path and auth token.
+
+## Version 1.45.0
+* CLI **(New)**: New Rust-based CLI with support for all recent Svix functionality.
+* Libs/Rust **(Breaking)**: Add `api::MessageAttemptListAttemptedMessagesOptions` and use it for
+  `MessageAttempt::list_attempted_messages`, replacing `MessageAttemptListOptions` which contained
+  some extra parameters never used with this method / endpoint ([#1568])
+* Libs/JavaScript **(Breaking)**: Add more precise type annotations for `options` parameters on
+  `MessageAttempt.list`, `MessageAttempt.listByMsg`, `MessageAttempt.listAttemptedMessages` and
+  `MessageAttempt.listAttemptedDestinations` ([#1571])
+* Libs/JavaScript **(Breaking)**: Rename `EndpointStatsOptions` interface to
+  `EndpointGetStatsOptions` ([#1585])
+* Libs/Kotlin **(Breaking)**: Remove `ListOptions` class. Usage of classes that were inheriting
+  from it should not change though ([#1587])
+* Libs/Rust: Add `api::Authentication::expire_all` ([#1584])
+* Libs/Rust: Rename some `Options` types. The old names remain as deprecated type aliases ([#1584])
+* Server: Fix Dockerfile exposed port to be 8071 ([#1596])
+
+[#1568]: https://github.com/svix/svix-webhooks/pull/1568
+[#1571]: https://github.com/svix/svix-webhooks/pull/1571
+[#1584]: https://github.com/svix/svix-webhooks/pull/1584
+[#1585]: https://github.com/svix/svix-webhooks/pull/1585
+[#1587]: https://github.com/svix/svix-webhooks/pull/1587
+
+## Version 1.44.0
+* Libs/JavaScript: Revert packaging-related change because it broke for some users ([#1556])
+* Libs/Rust **(Breaking)**: Remove unused optional `PostOptions` parameters from non-POST methods ([#1557])
+
+[#1556]: https://github.com/svix/svix-webhooks/pull/1556
+[#1557]: https://github.com/svix/svix-webhooks/pull/1557
+
+## Version 1.43.0
+* Libs/Go: Add convenient construction of messages with pre-serialized payload ([#1538])
+* Libs/Go: Reduce the use of `NullableX` types to where they actually have a use ([#1543])
+* Libs/JavaScript: Add convenient construction of messages with pre-serialized payload ([#1539])
+* Libs/Java: Add convenient construction of messages with pre-serialized payload ([#1544])
+* Libs/C#: Bump .NET target to 8.0 ([#1546])
+* Libs/C#: Add convenient construction of messages with pre-serialized payload ([#1545])
+* Libs/Python: Add convenient construction of messages with pre-serialized payload ([#1540])
+* Libs/Ruby: Add convenient construction of messages with pre-serialized payload ([#1541])
+* Libs/JavaScript: Compile svix package for ESM and CommonJS, reducing bundle sizes ([#1549])
+
+[#1538]: https://github.com/svix/svix-webhooks/pull/1538
+[#1543]: https://github.com/svix/svix-webhooks/pull/1543
+[#1539]: https://github.com/svix/svix-webhooks/pull/1539
+[#1540]: https://github.com/svix/svix-webhooks/pull/1540
+[#1541]: https://github.com/svix/svix-webhooks/pull/1541
+[#1544]: https://github.com/svix/svix-webhooks/pull/1544
+[#1545]: https://github.com/svix/svix-webhooks/pull/1545
+[#1546]: https://github.com/svix/svix-webhooks/pull/1546
+[#1549]: https://github.com/svix/svix-webhooks/pull/1549
+
+## Version 1.42.0
+* Server: Return 413 on large payloads ([#1530])
+* Libs/Python: Fix sync / async mismatch for op-webhook-endpoint API ([#1535])
+* Libs/Rust: Fix types of `iterator` fields ([#1534])
+* Libs/Kotlin: Add convenient construction of messages with pre-serialized payload ([#1531])
+* Libs/Rust: Add convenient construction of messages with pre-serialized payload ([#1533])
+
+[#1530]: https://github.com/svix/svix-webhooks/pull/1530
+[#1531]: https://github.com/svix/svix-webhooks/pull/1531
+[#1533]: https://github.com/svix/svix-webhooks/pull/1533
+[#1534]: https://github.com/svix/svix-webhooks/pull/1534
+[#1535]: https://github.com/svix/svix-webhooks/pull/1535
+
+## Version 1.41.0
+* Libs/JS: Allow `iterator` and date parameters on list endpoints to be `null` (in addition to `undefined`)
+* Libs/JS: Fix serialization of message `status` query parameters
+* Libs/Rust: Revert many pointless type changes from `Option<T>` to `Option<Option<T>>` that came with 1.39.0
+* Server: Improve error messages for configuration loading
+
+## Version 1.40.0
+* Libs(JS): downgrade `@stablelib/base64` avoiding `ERR_REQUIRE_ESM` by @svix-onelson in https://github.com/svix/svix-webhooks/pull/1506
+* Bridge: update ca-certificates by @jaymell in https://github.com/svix/svix-webhooks/pull/1507
+* Server: exit early if endpoints don't exist by @jaymell in https://github.com/svix/svix-webhooks/pull/1515
+
+## Version 1.39.0
+* Libs: Add operational webhook endpoint API
+* Libs/Rust: **[Breaking]** Models for PATCH endpoints now have `Option<Option<T>>` fields to allow explicitly sending nulls to unset those fields.
+* Libs/Go: **[Breaking]** Nullable arrays are once again represented by `[]T` instead of `*[]T`. Serialization handles the empty case correctly.
+* Libs: Upgrade `openapi-generator` to 7.9.0, with dependency upgrades and internal changes in the SDKs.
+* Server: Add Redis sentinel support
+* Server: Add OTEL metrics for Redis queues
+* Server: Add Redis DLQ support 
+* Server: Several dependency upgrades and CI improvements
+
+## Version 1.38.0
+* Server: Increase max endpoint rotations
+* Server: Return 409 on duplicate message insert
+* Server: Add `expunge` parameter to event-type deletion endpoint
+* Server: Add `message.attempt.recovered` operational webhook
+
+## Version 1.37.0
+* Libs(Go): `EndpointUpdate` and `EndpointPatch` allow null for channels, filter types
+
+## Version 1.36.0
+* Libs(Go): edit `EndpointIn` to allow null for channels, filter types
+
+## Version 1.35.0
+* Libs/Python: Revert breaking change to MessageInPayload/MessageOutPayload
+
+## Version 1.34.0
+* Libs/Rust: Add missing export of `V1MessageEventsParams`
+
+## Version 1.33.0
+* Server: Add support for deprecating event types
+* Server: Add support for HTTP(S) proxies
+
+## Version 1.32.0
+* Libs/Go Remove modules no longer produced by the generator
+* Server: Fix parsing proxy config from process environment
+
+## Version 1.31.0
+* Bridge: remove Beta tag
+* Libs/Go: prune out unused import for "time" in codegen output
+* Libs/C#: Fix appId, endpointId order in RotateSecretWithHttpInfoAsync
+* Libs: Support passing `application` to `app-portal-access` endpoint
+
+## Version 1.30.0
+* Server: Support filtering by before and after at the same time
+
+## Version 1.29.0
+* Bridge: Rebuild RabbitMQ producer on error
+* Server: Add support for SOCKS5 proxies
+* Libs/C#: add GetAppPortalAccess* methods to IAuthentication interface
+* Libs/Go: expose `with_content` for `Message.List`
+* Libs/Go: expose `with_msg` param on `MessageAttempt.ListByEndpoint`
+* Libs/Go: expose `order` in `Integtation.List` and `EventType.List`
+* Libs/Go: return response body for recover/replay
+* Libs/Go: expose `tag` for `MessageAttempt` list endpoints
+* Libs/Javascript: Publish src to npm to make it available for source maps
+* Libs/Python: ensure datetimes have a timezone
+
+## Version 1.28.0
+* Libs: Update OpenAPI spec
+
+## Version 1.27.0
+* Libs/Python: add missing 'get_stats' function
+
+## Version 1.26.0
+* Server: add configuration to for changing service name on OpenTelemetry
+* Bridge: add `/events` poller
+* Bridge: log svix client errors as error, not trace
+
+## Version 1.25.0
+* Server: Enable redis `tcp_nodelay`
+* Server: Improve database error classification
+* Server: Update dependencies
+* Bridge: Upgrade omniqueue and other dependencies
+* Bridge: Add Kafka as an input
+* Libs/Javascript: Apply workaround for incomplete fetch support in Cloudflare Worker
+* Libs/Go: Add NullableBool function
+* Libs/Python: Update dependencies and switch to ruff
+* Libs/Rust: Add `Svix::with_token` to allow changing API token
+* Libs/PHP: Replace ctype_digit for PHP 8.1 deprecation of non-string arguments
+
+## Version 1.24.0 
+* Server: Update redis health check
+* Server: Clean up tracing spans for HTTP requests
+* Libs: Update OpenAPI
+
+## Version 1.23.0
+* Libs/Javascript: Fix method naming consistency
+* Add oauth support to javascript
+
+## Version 1.22.0
+* Server: Don't require trailing slash at the end of request paths
+* Server: Improve testing performance and reduce redundant test runs
+* Server: Improve performance of `/api/v1/openapi.json` route
+* Server: Upgrade dependencies and improve code formatting
+* Server: Upgrade to Docker Compose v2
+* Libs/Ruby: Add PATCH endpoints
+
+## Version 1.21.0
+* Server: Improve error information on failed assertions in Redis module
+* Server: Use omniqueue for Redis queue implementation
+* Server: Upgrade OpenTelemetry dependencies
+* Bridge: Upgrade dependencies
+* Libs/Rust: Print more detailed error messages for generic errors
+
+## Version 1.20.0
+* Server and Bridge: Performance improvements in test setup
+* Libs/C#: don't serialize nulls in PATCH endpoints
+* Libs/Rust: Make API method Future implement Send/Sync
+
+## Version 1.19.0
+* Libs/Python: Make request timeout and retries configurable
+* Libs/Rust: Make request timeout configurable
+
+## Version 1.18.0
+* Server: upgrade dependencies 
+* Server: adopt omniqueue as a queue backend
+* Libs/C#: **[Breaking]** Return iterator information in list endpoints. Changes the return type of list endpoints.
+* Libs/Java: don't serialize nulls in PATCH endpoint methods
+* Libs/Rust: upgrade and clean up dependencies 
+* Libs/Rust: switch from reqwest to hyper 1.0
+
+## Version 1.17.0
+* Server: Upgrade hyper to 0.14.28
+* Libs/Rust: **[Important]** Fix a bug in the webhook signature verification method where certain signatures could bypass the verification.
+* Libs/Java: **[Breaking]** Use Java time instead of threetenbp. This removes the need to import threetenbp to use the library. Depending on how the lib is used, it might require migrating uses of threetenbp to Java 8 Date-Time APIs. 
+
+## Version 1.16.0
+* Server: Add `tag` parameter to list-message for Go, JavaScript, and Python.
+* Server: improvements to the expired message cleaner.
+* Libs: update OpenAPI spec and libs.
+* Libs/Javascript: Fix thrown error message when API status code is unknown.
+
+## Version 1.15.0
+* Libs: update OpenAPI spec and libs.
+
+## Version 1.14.0
+* Server: separate out the message content to its own model.
+* Libs: expose two new Statistics endpoints.
+* Libs/Csharp: implement "hard delete" event types.
+* Libs/Ruby: accept additional options on message get.
+* Libs/Go: fix transformation partial update function.
+* Libs/Kotlin: fix errors with APIs that return no content (like endpoint delete).
+
+## Version 1.13.0
+* Server: Fix tracking of backtrace in some error cases.
+* Libs/Go: expose `EventType.DeleteWithOptions`
+
+## Version 1.12.0
+* Libs: update OpenAPI spec
+
+## Version 1.11.0
+* Server: update Docker image to Debian bookworm.
+* Server: update dependencies.
+* Libs: add functions to import event types from OpenAPI specs
+* Libs: update OpenAPI spec
+
+## Version 1.10.0
+* Server: fix docker image.
+* Server: release arm64 version!
+
+## Version 1.9.0
+* Server: add missing field documentation for query params.
+* Server: warn people trying to use the JWT secret as an auth token.
+* Server: allow disabling TLS verification.
+* Server: use jemalloc as the global allocator.
+* Server: add Sentry support.
+* Server: update dependencies.
+* Server: update Docker base image and rust version.
+* Libs/Go: export missing types
+* Bridge: switch to the Omniqueue library
+* Bridge: use jemalloc as the global allocator.
+* Bridge: update Docker base image and rust version.
+
+## Version 1.8.1
+* Server: correctly disconnect the tracing provider when shutting down in some rare scenarios.
+* Libs: update OpenAPI spec
+
+## Version 1.8.0
+* Libs/Go: fix behavior of `NullableInt32` and `NullableString`
+* Server: Add `with_content` to attempt listing endpoints
+* Bridge: better js transformations
+
+## Version 1.7.0
+* Server: update Docker image to use latest Rust version
+* Server: support additional JWT signing algorithms (including asymmetric!).
+* Server: Avoid panics when using the wait-for option (better errors printing).
+* Libs/Rust: fix handling of integer enums (was causing failures for some endpoints).
+
+## Version 1.6.0
+* Server: add 'event_types' query param to 'list-attempted-messages'
+* Libs: implement the `patch` endpoints for partial updates
+
+## Version 1.5.2
+* Libs/JavaScript: Fix regression in previous release and allow passing `Buffer` to sign/verify.
+
+## Version 1.5.1
+* Server: Implement the send-example route.
+* Libs/JavaScript: Add an explicit check that payload is a string.
+* Libs: Fix a bug with integration key creation.
+
+## Version 1.5.0
+* Server: update OpenSSL dep and fix an incredibly slow memory leak.
+* Libs/Go: support passing `WithContent` to `List Attepmted Messages`
+* Libs/Python: fix regression in Python library (causing some functions not to work).
+
+## Version 1.4.12
+* Sync OSS package version with our internal version.
+* Server: support comma separated array query params
+* Bridge: initial release
+* Libs: update OpenAPI spec
+* Libs: add support for "Background Task" endpoints
+* Libs: add support for since/until to endpoint stats
+* Libs/Go: add missing `endpoint_id` option to list attempts by msg.
+* Libs/JavaScript: add missing `withContent` field to `MessageListOptions`.
+* Libs/Rust: fix typo in error handling message
+
+## Version 0.85.1
+* Libs: update OpenAPI spec
+
+## Version 0.85.0
+* Server: add a missing migration for operational webhooks event types.
+* Libs/Ruby: fix the library failing to load due to missing dependency.
+* Libs: **[Semi-breaking]** we changed the return value of the transformation simulation endpoint. It's technically a breaking page, though the API is private so it shouldn't affect people.
+
+## Version 0.84.1
+* Libs: regenerate libs from the correct openapi spec (could have caused potential authentication issues)
+
+## Version 0.84.0
+* Server: add (beta) RabbitMQ implementation
+* Server: upgrade redis-rs and a few other dependencies
+* Server: improve OpenAPI generation
+* Server: fix issue with Redis being required in the docker image
+* Libs/Rust: support choosing the wanted TLS implementation
+
+## Version 0.83.1
+* Libs: update OpenAPI spec
+
+## Version 0.83.0
+* Server: bump deps
+* Libs: Add `send-example` wrapper to libraries
+* Libs/Go: alias missing types from internal dir / openapi package
+
+## Version 0.82.1
+* Libs/Java: serialize nulls when making HTTP requests
+
+## Version 0.82.0
+* Server: refactor expired message cleaner to be incremental (prevent locks)
+* Server: improve OpenAPI generation
+* Server: Fix handling of very large numbers in json (larger than i64)
+* Server: do not throw error on missing payload in worker
+* Server: update dependencies
+
+## Version 0.81.0
+* Libs: add support for creating application when creating a message
+* Libs/Go: bump Go version
+
+## Version 0.80.0
+* Libs: add `prev_iterator` and `order` support to application list
+* Libs: add `prev_iterator` support to event type list
+* Libs/C#: **[Breaking]** change default value for `SvixOptions.Throw` to `true`
+
+## Version 0.79.0
+* Server: support prev_iterator for application and event type listing
+* Server: fix returning of 409 (CONFLICT) when inserting/patching an application with a conflicting `uid`
+* Libs/Ruby: require (reexport) app portal models in ruby (fixing errors)
+* Libs/C#: fix MessageAttempt querying when not filtering by status and code
+
+## Version 0.78.0
+* Server: add `order` query parameter for sorting endpoints
+* Server: fix default sort order of endpoints to `desc` to match prod
+* Libs: add support for `prev_iterator` for application and endpoints
+* Libs/JS: fix sign function to support non-round dates
+* Libs/Go: **[Breaking]** accept a context parameter in all Go lib methods
+
+## Version 0.77.0
+* Server: fix event_type array query parsing
+* Server: fix bad `?channel=` queries
+* Server: fire operational webhook on endpoint secret rotation
+* Server: implement bidirectional pagination for endpoints
+* Libs/Rust: glob-reexport all generated models in Rust
+
+## Version 0.76.1
+* Server: fix `/attempt/endpoint`'s broken `?channel=` query
+* Libs/Rust: add missing exports to a few API endpoints
+* Libs: fix naming of replay-missing methods in libraries (all but Rust)
+
+## Version 0.76.0
+* Server: add org_id and app_id to main tracing span
+* Server: make `wait_for` timeout early and retry
+* Server: add since/until query params to endpoint stats
+* Server: add endpoints to expunge payload and response
+* Server: clarify error message and documentation around filtered IP addresses
+* Server: fix error message with endpoint filter types validation
+* Server: fix `?after=<time>` ID Parsing in paginated endpoints
+* Libs: add endpoints to expunge payload and response
+* Libs: add replay missing messages functions
+* Libs: add transformations APIs
+
+## Version 0.75.0
+* Server: add built in SSRF support (no need for an external proxy)
+* Server: many worker improvements (see #704 for details)
+* Server: fix Span HTTP Routes
+* Server: update deps
+* Server: add Length limit validation to EndpointHeader value
+* Server: add missing root CAs to default docker image
+* Server: add updated app-portal-access API endpoint (to replace the deprecated dashboard-access)
+* Server: add feature flag gating to event types
+* Libs/Rust: Enable TLS support in `reqwest` by default
+* Libs: support the new feature flag gating of event types
 
 ## Version 0.74.1
 * Libs/Rust: make all `*Options` and fields public (missing from previous release)
@@ -229,7 +759,7 @@
 * Ruby: Fix a broken import (we changed the name of a webhook event) 🐞
 
 ## Version 0.53.0
-* Python: **Breaking** The python library is now fully typed!  There may be some breaking changes releated to this upgrade (including dropping support for Python 2.X). Please check test and check your integration before upgrading to this version. 🤓
+* Python: **Breaking** The python library is now fully typed!  There may be some breaking changes related to this upgrade (including dropping support for Python 2.X). Please check test and check your integration before upgrading to this version. 🤓
 * Python: New Async API via SvixAsync! 🚀
 * Libs: Remove the `prevIterator` option from message attempt options (This was added by mistake, never worked and was never meant to work. All iterators should be passed via the `iterator` option. Sorry for the confusion!)
 * Libs: Allow filtering by messages by channel

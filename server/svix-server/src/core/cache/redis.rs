@@ -4,18 +4,18 @@
 use std::time::Duration;
 
 use axum::async_trait;
-
-use crate::redis::{PoolLike, PooledConnectionLike, RedisPool};
+use redis::AsyncCommands as _;
 
 use super::{Cache, CacheBehavior, CacheKey, Error, Result};
+use crate::redis::RedisManager;
 
-pub fn new(redis: RedisPool) -> Cache {
+pub fn new(redis: RedisManager) -> Cache {
     RedisCache { redis }.into()
 }
 
 #[derive(Clone)]
 pub struct RedisCache {
-    redis: RedisPool,
+    redis: RedisManager,
 }
 
 #[async_trait]
@@ -59,7 +59,7 @@ impl CacheBehavior for RedisCache {
 
         cmd.arg("NX");
 
-        let res: Option<()> = pool.query_async(cmd).await?;
+        let res: Option<()> = cmd.query_async(&mut pool).await?;
 
         Ok(res.is_some())
     }
@@ -67,7 +67,7 @@ impl CacheBehavior for RedisCache {
     async fn delete<T: CacheKey>(&self, key: &T) -> Result<()> {
         let mut pool = self.redis.get().await?;
 
-        pool.del(key.as_ref()).await?;
+        let _: () = pool.del(key.as_ref()).await?;
 
         Ok(())
     }
@@ -75,13 +75,13 @@ impl CacheBehavior for RedisCache {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        super::{kv_def, string_kv_def, CacheValue, StringCacheValue},
-        *,
-    };
     use serde::{Deserialize, Serialize};
 
-    use crate::cfg::CacheType;
+    use super::{
+        super::{kv_def, string_kv_def, CacheValue},
+        *,
+    };
+    use crate::cfg::Configuration;
 
     // Test structures
 
@@ -103,41 +103,25 @@ mod tests {
         }
     }
 
-    #[derive(Deserialize, Serialize, Debug, PartialEq)]
-    struct StringTestVal(String);
-    string_kv_def!(StringTestKey, StringTestVal);
+    string_kv_def!(StringTestKey);
     impl StringTestKey {
         fn new(id: String) -> StringTestKey {
             StringTestKey(format!("SVIX_TEST_KEY_STRING_{id}"))
         }
     }
 
-    impl std::fmt::Display for StringTestVal {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "{}", self.0)
-        }
-    }
-
-    impl TryFrom<String> for StringTestVal {
-        type Error = crate::error::Error;
-        fn try_from(s: String) -> crate::error::Result<Self> {
-            Ok(StringTestVal(s))
-        }
-    }
-
-    async fn get_pool(redis_dsn: &str, cfg: &crate::cfg::Configuration) -> RedisPool {
-        match cfg.cache_type {
-            CacheType::RedisCluster => crate::redis::new_redis_pool_clustered(redis_dsn, cfg).await,
-            _ => crate::redis::new_redis_pool(redis_dsn, cfg).await,
-        }
+    async fn get_pool(cfg: &Configuration) -> RedisManager {
+        RedisManager::from_cache_backend(&cfg.cache_backend()).await
     }
 
     #[tokio::test]
+    // run with `cargo test -- --ignored redis` only when redis is up and configured
+    #[ignore]
     async fn test_cache_crud_no_ttl() {
-        dotenv::dotenv().ok();
+        dotenvy::dotenv().ok();
         let cfg = crate::cfg::load().unwrap();
 
-        let redis_pool = get_pool(cfg.redis_dsn.as_ref().unwrap().as_str(), &cfg).await;
+        let redis_pool = get_pool(&cfg).await;
         let cache = super::new(redis_pool);
 
         let (first_key, first_val_a, first_val_b) =
@@ -149,8 +133,8 @@ mod tests {
         );
         let (third_key, third_val_a, third_val_b) = (
             StringTestKey::new("1".to_owned()),
-            StringTestVal("1".to_owned()),
-            StringTestVal("2".to_owned()),
+            "1".to_owned(),
+            "2".to_owned(),
         );
 
         // Create
@@ -205,18 +189,16 @@ mod tests {
         // Confirm deletion
         assert_eq!(cache.get::<TestValA>(&first_key).await.unwrap(), None);
         assert_eq!(cache.get::<TestValB>(&second_key).await.unwrap(), None);
-        assert_eq!(
-            cache.get_string::<StringTestVal>(&third_key).await.unwrap(),
-            None
-        );
+        assert_eq!(cache.get_string(&third_key).await.unwrap(), None);
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_cache_ttl() {
-        dotenv::dotenv().ok();
+        dotenvy::dotenv().ok();
         let cfg = crate::cfg::load().unwrap();
 
-        let redis_pool = get_pool(cfg.redis_dsn.as_ref().unwrap().as_str(), &cfg).await;
+        let redis_pool = get_pool(&cfg).await;
         let cache = super::new(redis_pool);
 
         let key = TestKeyA::new("key".to_owned());
@@ -230,11 +212,12 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_cache_nx_status() {
-        dotenv::dotenv().ok();
+        dotenvy::dotenv().ok();
         let cfg = crate::cfg::load().unwrap();
 
-        let redis_pool = get_pool(cfg.redis_dsn.as_ref().unwrap().as_str(), &cfg).await;
+        let redis_pool = get_pool(&cfg).await;
         let cache = super::new(redis_pool);
 
         let key = TestKeyA::new("nx_status_test_key".to_owned());

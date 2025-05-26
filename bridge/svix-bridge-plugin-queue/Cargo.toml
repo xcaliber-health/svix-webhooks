@@ -1,0 +1,35 @@
+[package]
+name = "svix-bridge-plugin-queue"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+svix-bridge-types.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-executor-trait = "2.1"
+tokio-reactor-trait = "1.1"
+tracing = "0.1"
+
+[dependencies.omniqueue]
+git = "https://github.com/svix/omniqueue-rs"
+rev = "e953ce07621a33708a4c28d9a5cfe431ede45dee"
+default-features = false
+features = ["gcp_pubsub", "rabbitmq", "redis", "sqs"]
+
+[dev-dependencies]
+aws-config = "1.1.5"
+aws-sdk-sqs = "1.13.0"
+fastrand = "2.0.1"
+google-cloud-googleapis = "0.15.0"
+google-cloud-pubsub = "0.29.1"
+lapin = "2"
+redis = { version = "0.27.2", features = ["tokio-comp", "streams"] }
+tracing-subscriber.workspace = true
+wiremock.workspace = true
+
+[lints]
+workspace = true

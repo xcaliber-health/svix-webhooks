@@ -6,30 +6,38 @@ const versionFilePath = ".version";
 
 const filesPaths = [
     versionFilePath,
+    // CLI
+    "svix-cli/Cargo.toml",
+    "svix-cli/README.md",
     // Rust Server
-    "server/svix-server/Cargo.toml",
+    "server/Cargo.toml",
+    // Bridge Server
+    "bridge/svix-bridge/Cargo.toml",
     // Rust Client
     "rust/Cargo.toml",
     // CSharp
     "csharp/Svix/Svix.csproj",
+    "csharp/Svix/Version.cs",
     // Go
-    "go/internal/version/version.go",
+    "go/version.go",
     // Java
     "java/gradle.properties",
     "java/README.md",
-    "java/lib/src/main/java/com/svix/Svix.java",
+    "java/lib/src/main/java/com/svix/Version.java",
     // Javascript
     "javascript/package.json",
-    "javascript/src/index.ts",
+    "javascript/src/request.ts",
     // Kotlin
     "kotlin/gradle.properties",
     "kotlin/README.md",
-    "kotlin/lib/src/main/kotlin/SvixOptions.kt",
+    "kotlin/lib/src/main/kotlin/Version.kt",
     // Python
     "python/svix/__init__.py",
     // Ruby
     "ruby/Gemfile.lock",
-    "ruby/lib/svix/version.rb"
+    "ruby/lib/svix/version.rb",
+    // Cloud OpenAPI spec - not necessary but any other time of updating seems weirder
+    "lib-openapi.json",
 ];
 
 const rootDir = join(__dirname, "..");
@@ -53,6 +61,10 @@ filesPaths.forEach((relativePath) => {
     const filePath = join(rootDir, relativePath);
     const content = readFileSync(filePath, 'utf8');
     const updated_content = content.replace(replaceRegExp, newVersion);
+    if (content === updated_content) {
+        console.error("New version was not written to " + filePath)
+        process.exit(1);
+    }
     writeFileSync(filePath, updated_content);
 })
 

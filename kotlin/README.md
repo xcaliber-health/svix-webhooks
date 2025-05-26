@@ -51,7 +51,7 @@ Add this dependency to your project's POM:
 <dependency>
   <groupId>com.svix.kotlin</groupId>
   <artifactId>svix-kotlin</artifactId>
-  <version>0.74.1</version>
+  <version>1.66.0</version>
   <scope>compile</scope>
 </dependency>
 ```
@@ -61,7 +61,7 @@ Add this dependency to your project's POM:
 Add this dependency to your project's build file:
 
 ```groovy
-implementation "com.svix.kotlin:svix-kotlin:0.74.1"
+implementation "com.svix.kotlin:svix-kotlin:1.66.0"
 ```
 
 # Development
@@ -70,7 +70,7 @@ First checkout the [core README](../README.md#development) for details on how to
 
 ## Requirements
 
- -  Kotlin 1.5.10+
+ -  Kotlin 1.9.00+
  - Gradle
 
 ## Building the library

@@ -29,11 +29,12 @@ class Webhook {
             }
         }
         val timestamp: Long = verifyTimestamp(msgTimestamp.get())
-        val expectedSignature: String = try {
-            sign(msgId.get(), timestamp, payload).split(",".toRegex()).toTypedArray()[1]
-        } catch (e: WebhookSigningException) {
-            throw WebhookVerificationException("Failed to generate expected signature")
-        }
+        val expectedSignature: String =
+            try {
+                sign(msgId.get(), timestamp, payload).split(",".toRegex()).toTypedArray()[1]
+            } catch (e: WebhookSigningException) {
+                throw WebhookVerificationException("Failed to generate expected signature")
+            }
         val msgSignatures = msgSignature.get().split(" ".toRegex()).toTypedArray()
         for (versionedSignature in msgSignatures) {
             val sigParts = versionedSignature.split(",".toRegex()).toTypedArray()
@@ -84,11 +85,12 @@ class Webhook {
         @Throws(WebhookVerificationException::class)
         private fun verifyTimestamp(timestampHeader: String): Long {
             val now: Long = System.currentTimeMillis() / SECOND_IN_MS
-            val timestamp: Long = try {
-                timestampHeader.toLong()
-            } catch (e: NumberFormatException) {
-                throw WebhookVerificationException("Invalid Signature Headers")
-            }
+            val timestamp: Long =
+                try {
+                    timestampHeader.toLong()
+                } catch (e: NumberFormatException) {
+                    throw WebhookVerificationException("Invalid Signature Headers")
+                }
 
             if (timestamp < now - TOLERANCE_IN_SECONDS) {
                 throw WebhookVerificationException("Message timestamp too old")

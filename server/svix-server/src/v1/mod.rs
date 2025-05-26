@@ -21,6 +21,7 @@ pub fn router() -> ApiRouter<AppState> {
         .merge(endpoints::event_type::router())
         .merge(endpoints::message::router())
         .merge(endpoints::attempt::router())
+        .merge(endpoints::admin::router())
         .layer(
             TraceLayer::new_for_http()
                 .make_span_with(AxumOtelSpanCreator)
@@ -41,9 +42,11 @@ mod development {
     use axum::{async_trait, extract::FromRequestParts, routing::get, Json, Router};
     use http::request::Parts;
 
-    use crate::error::{Error, Result};
-    use crate::v1::utils::EmptyResponse;
-    use crate::AppState;
+    use crate::{
+        error::{Error, Result},
+        v1::utils::EmptyResponse,
+        AppState,
+    };
 
     struct EchoData {
         pub headers: String,
@@ -71,6 +74,6 @@ mod development {
     }
 
     pub fn router() -> Router<AppState> {
-        Router::new().route("/development/echo/", get(echo).post(echo))
+        Router::new().route("/development/echo", get(echo).post(echo))
     }
 }

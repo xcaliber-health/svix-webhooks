@@ -1,22 +1,22 @@
 // SPDX-FileCopyrightText: © 2022 Svix Authors
 // SPDX-License-Identifier: MIT
 
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Deref,
+    sync::LazyLock,
+};
 
 use chrono::{DateTime, Utc};
-use lazy_static::lazy_static;
 use num_enum::{IntoPrimitive, TryFromPrimitive};
 use rand::Rng;
-
 use regex::Regex;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use std::ops::Deref;
 use svix_ksuid::*;
 use validator::{Validate, ValidationErrors};
 
-use crate::{err_generic, v1::utils::validation_error};
+use crate::v1::utils::validation_error;
 
 pub mod metadata;
 
@@ -54,6 +54,19 @@ macro_rules! enum_wrapper {
         }
 
         impl sea_orm::TryGetable for $name_id {
+            fn try_get_by<I: sea_orm::ColIdx>(
+                res: &sea_orm::QueryResult,
+                index: I,
+            ) -> Result<Self, sea_orm::TryGetError> {
+                match i16::try_get_by(res, index) {
+                    // We are using null as a placeholder error for invalid sea_orm::Values
+                    Ok(v) => v
+                        .try_into()
+                        .map_err(|_| sea_orm::TryGetError::Null("invalid sea_orm_value".into())),
+                    Err(e) => Err(e),
+                }
+            }
+
             fn try_get(
                 res: &sea_orm::QueryResult,
                 pre: &str,
@@ -111,6 +124,17 @@ macro_rules! json_wrapper {
         }
 
         impl sea_orm::TryGetable for $name_id {
+            fn try_get_by<I: sea_orm::ColIdx>(
+                res: &sea_orm::QueryResult,
+                index: I,
+            ) -> Result<Self, sea_orm::TryGetError> {
+                match sea_orm::prelude::Json::try_get_by(res, index) {
+                    // We are using null as a placeholder error for invalid sea_orm::Values
+                    Ok(v) => Ok(serde_json::from_value(v).expect("Error deserializing JSON")),
+                    Err(e) => Err(e),
+                }
+            }
+
             fn try_get(
                 res: &sea_orm::QueryResult,
                 pre: &str,
@@ -158,7 +182,7 @@ pub trait BaseId: Deref<Target = String> {
     const PREFIX: &'static str;
     type Output;
 
-    fn validate_(&self) -> std::result::Result<(), ValidationErrors> {
+    fn validate_(&self) -> Result<(), ValidationErrors> {
         let mut errors = ValidationErrors::new();
         if !&self.starts_with(Self::PREFIX) {
             errors.add(
@@ -189,15 +213,33 @@ pub trait BaseId: Deref<Target = String> {
         let buf = [0xFFu8; KsuidMs::PAYLOAD_BYTES];
         Self::new(Some(start), Some(&buf[..]))
     }
+
+    fn timestamp(&self) -> DateTime<Utc> {
+        self.ksuid().timestamp()
+    }
+
+    fn ksuid(&self) -> svix_ksuid::KsuidMs {
+        let ksuid_str = self
+            .strip_prefix(Self::PREFIX)
+            .expect("ID has invalid prefix");
+        <svix_ksuid::KsuidMs as svix_ksuid::KsuidLike>::from_base62(ksuid_str)
+            .expect("ID was not encoded as valid ksuid")
+    }
 }
 
-fn validate_limited_str(s: &str) -> std::result::Result<(), ValidationErrors> {
+fn validate_limited_str(s: &str) -> Result<(), ValidationErrors> {
     const MAX_LENGTH: usize = 256;
-    lazy_static! {
-        static ref RE: Regex = Regex::new(r"^[a-zA-Z0-9\-_.]+$").unwrap();
-    }
+    static RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-zA-Z0-9\-_.]+$").unwrap());
     let mut errors = ValidationErrors::new();
-    if s.len() > MAX_LENGTH {
+    if s.is_empty() {
+        errors.add(
+            ALL_ERROR,
+            validation_error(
+                Some("length"),
+                Some("String must be at least one character"),
+            ),
+        );
+    } else if s.len() > MAX_LENGTH {
         errors.add(
             ALL_ERROR,
             validation_error(Some("length"), Some("String too long")),
@@ -221,7 +263,7 @@ fn validate_limited_str(s: &str) -> std::result::Result<(), ValidationErrors> {
 pub trait BaseUid: Deref<Target = String> {
     const ID_PREFIX: &'static str;
 
-    fn validate_(&self) -> std::result::Result<(), ValidationErrors> {
+    fn validate_(&self) -> Result<(), ValidationErrors> {
         let mut errors = match validate_limited_str(self) {
             Ok(_) => ValidationErrors::new(),
             Err(x) => x,
@@ -245,8 +287,26 @@ pub trait BaseUid: Deref<Target = String> {
 
 macro_rules! string_wrapper {
     ($name_id:ident) => {
-        #[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+        #[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
         pub struct $name_id(pub String);
+
+        string_wrapper_impl!($name_id);
+    };
+    ($name_id:ident, $string_schema:expr) => {
+        string_wrapper!($name_id);
+
+        common_jsonschema_impl!($name_id, $string_schema);
+    };
+}
+
+macro_rules! string_wrapper_impl {
+    ($name_id:ident) => {
+        impl $name_id {
+            /// Wraps the type as JSONB. Useful when doing comparisons in a jsonb container w/sea_orm|postgres.
+            pub fn jsonb(self) -> sea_orm::Value {
+                sea_orm::Value::Json(Some(Box::new(serde_json::Value::String(self.0))))
+            }
+        }
 
         impl Deref for $name_id {
             type Target = String;
@@ -263,6 +323,16 @@ macro_rules! string_wrapper {
         }
 
         impl sea_orm::TryGetable for $name_id {
+            fn try_get_by<I: sea_orm::ColIdx>(
+                res: &sea_orm::QueryResult,
+                index: I,
+            ) -> Result<Self, sea_orm::TryGetError> {
+                match String::try_get_by(res, index) {
+                    Ok(v) => Ok($name_id(v)),
+                    Err(e) => Err(e),
+                }
+            }
+
             fn try_get(
                 res: &sea_orm::QueryResult,
                 pre: &str,
@@ -307,12 +377,88 @@ macro_rules! string_wrapper {
                 self.0.fmt(f)
             }
         }
+
+        impl From<String> for $name_id {
+            fn from(s: String) -> Self {
+                $name_id(s)
+            }
+        }
+    };
+}
+
+/// A container type for storing schema information commonly used by string
+/// wrapper types.
+#[derive(Default)]
+pub struct StringSchema {
+    pub string_validation: Option<schemars::schema::StringValidation>,
+    pub example: Option<String>,
+}
+
+impl StringSchema {
+    pub fn schema_for_ids(prefix: &'static str) -> Self {
+        Self {
+            string_validation: None,
+            example: Some(format!("{prefix}1srOrx2ZWZBpBUvZwXKQmoEYga2")),
+        }
+    }
+
+    pub fn schema_for_uids(prefix: &'static str) -> Self {
+        Self {
+            string_validation: Some(schemars::schema::StringValidation {
+                min_length: Some(1),
+                max_length: Some(256),
+                pattern: Some(r"^[a-zA-Z0-9\-_.]+$".to_string()),
+            }),
+            example: Some(format!("unique-{prefix}identifier").replace('_', "-")),
+        }
+    }
+}
+
+/// Macro to generate a [`JsonSchema`] impl for string wrapper types.
+/// * `name_id` is the name of the identifier for which the impl is generated.
+/// * `string_schema` is a [`StringSchema`] to enrich the generated schema with
+///   more information.
+macro_rules! common_jsonschema_impl {
+    ($name_id:ident, $string_schema:expr) => {
+        impl ::schemars::JsonSchema for $name_id {
+            fn schema_name() -> String {
+                stringify!($name_id).to_string()
+            }
+
+            fn json_schema(gen: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+                let mut schema = String::json_schema(gen);
+
+                if let schemars::schema::Schema::Object(obj) = &mut schema {
+                    // This is just to help with type hints when the macro is expanded.
+                    let options: $crate::core::types::StringSchema = $string_schema;
+
+                    obj.string = options.string_validation.map(Box::new);
+                    if let Some(example) = options.example {
+                        obj.extensions
+                            .insert("example".to_string(), serde_json::Value::String(example));
+                    }
+                }
+
+                schema
+            }
+
+            fn is_referenceable() -> bool {
+                false
+            }
+        }
     };
 }
 
 macro_rules! create_id_type {
     ($name_id:ident, $key_prefix:literal) => {
-        string_wrapper!($name_id);
+        create_id_type!(
+            $name_id,
+            $key_prefix,
+            $crate::core::types::StringSchema::default()
+        );
+    };
+    ($name_id:ident, $key_prefix:literal, $string_schema:expr) => {
+        string_wrapper!($name_id, $string_schema);
 
         impl BaseId for $name_id {
             const PREFIX: &'static str = $key_prefix;
@@ -336,22 +482,23 @@ macro_rules! create_id_type {
                 )))
             }
         }
-
-        impl From<String> for $name_id {
-            fn from(s: String) -> Self {
-                $name_id(s)
-            }
-        }
     };
 }
 
 macro_rules! create_all_id_types {
     ($name_id:ident, $name_uid:ident, $name_id_or_uid:ident, $key_prefix:literal) => {
         // Id
-        create_id_type!($name_id, $key_prefix);
+        create_id_type!(
+            $name_id,
+            $key_prefix,
+            $crate::core::types::StringSchema::schema_for_ids($key_prefix)
+        );
 
         // Uid
-        string_wrapper!($name_uid);
+        string_wrapper!(
+            $name_uid,
+            $crate::core::types::StringSchema::schema_for_uids($key_prefix)
+        );
 
         impl BaseUid for $name_uid {
             const ID_PREFIX: &'static str = $key_prefix;
@@ -370,8 +517,13 @@ macro_rules! create_all_id_types {
         }
 
         // Id or uid
-        #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+        #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
         pub struct $name_id_or_uid(pub String);
+
+        common_jsonschema_impl!(
+            $name_id_or_uid,
+            $crate::core::types::StringSchema::schema_for_uids($key_prefix)
+        );
 
         impl From<$name_id_or_uid> for $name_uid {
             fn from(v: $name_id_or_uid) -> Self {
@@ -400,15 +552,33 @@ macro_rules! create_all_id_types {
 }
 
 create_id_type!(OrganizationId, "org_");
-create_id_type!(MessageAttemptId, "atmpt_");
+create_id_type!(
+    MessageAttemptId,
+    "atmpt_",
+    crate::core::types::StringSchema {
+        string_validation: None,
+        example: Some("atmpt_1srOrx2ZWZBpBUvZwXKQmoEYga2".to_string()),
+    }
+);
 create_id_type!(MessageEndpointId, "msgep_");
 create_id_type!(EventTypeId, "evtype_");
+create_id_type!(QueueBackgroundTaskId, "qtask_");
 
 create_all_id_types!(ApplicationId, ApplicationUid, ApplicationIdOrUid, "app_");
 create_all_id_types!(EndpointId, EndpointUid, EndpointIdOrUid, "ep_");
 create_all_id_types!(MessageId, MessageUid, MessageIdOrUid, "msg_");
 
-string_wrapper!(EventTypeName);
+string_wrapper!(
+    EventTypeName,
+    crate::core::types::StringSchema {
+        string_validation: Some(schemars::schema::StringValidation {
+            max_length: Some(256),
+            min_length: None,
+            pattern: Some(r"^[a-zA-Z0-9\-_.]+$".to_string()),
+        }),
+        example: Some("user.signup".to_string()),
+    }
+);
 
 impl Validate for EventTypeName {
     fn validate(&self) -> Result<(), validator::ValidationErrors> {
@@ -416,7 +586,17 @@ impl Validate for EventTypeName {
     }
 }
 
-string_wrapper!(EventChannel);
+string_wrapper!(
+    EventChannel,
+    crate::core::types::StringSchema {
+        string_validation: Some(schemars::schema::StringValidation {
+            max_length: Some(128),
+            min_length: None,
+            pattern: Some(r"^[a-zA-Z0-9\-_.]+$".to_string()),
+        }),
+        example: Some("project_1337".to_string()),
+    }
+);
 
 impl Validate for EventChannel {
     fn validate(&self) -> Result<(), validator::ValidationErrors> {
@@ -425,6 +605,7 @@ impl Validate for EventChannel {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(transparent)]
 pub struct EventChannelSet(pub HashSet<EventChannel>);
 json_wrapper!(EventChannelSet);
 
@@ -438,6 +619,7 @@ impl Validate for EventChannelSet {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[schemars(transparent)]
 pub struct EventTypeNameSet(pub HashSet<EventTypeName>);
 json_wrapper!(EventTypeNameSet);
 
@@ -455,7 +637,7 @@ pub struct ExpiringSigningKeys(pub Vec<ExpiringSigningKey>);
 json_wrapper!(ExpiringSigningKeys);
 
 impl ExpiringSigningKeys {
-    pub const MAX_OLD_KEYS: usize = 5;
+    pub const MAX_OLD_KEYS: usize = 10;
     pub const OLD_KEY_EXPIRY_HOURS: i64 = 24;
 }
 
@@ -497,8 +679,8 @@ impl EndpointSecretMarker {
     fn from_u8(v: u8) -> crate::error::Result<Self> {
         let encrypted = (v & Self::ENCRYPTED_FLAG) != 0;
         let v = v & !Self::ENCRYPTED_FLAG;
-        let type_ =
-            EndpointSecretType::try_from(v).map_err(|_| err_generic!("Invalid marker value"))?;
+        let type_ = EndpointSecretType::try_from(v)
+            .map_err(|_| crate::error::Error::generic("Invalid marker value"))?;
 
         Ok(Self { type_, encrypted })
     }
@@ -569,7 +751,7 @@ impl EndpointSecretInternal {
     fn from_vec(v: Vec<u8>) -> crate::error::Result<Self> {
         // Legacy had exact size
         match v.len() {
-            0..=Self::KEY_SIZE_MINUS_ONE => Err(err_generic!("Value too small")),
+            0..=Self::KEY_SIZE_MINUS_ONE => Err(crate::error::Error::generic("Value too small")),
             Self::KEY_SIZE => Ok(Self {
                 marker: EndpointSecretMarker {
                     type_: EndpointSecretType::Hmac256,
@@ -633,7 +815,9 @@ impl EndpointSecretInternal {
             if encryption.enabled() {
                 encryption.decrypt(&self.key)?
             } else {
-                return Err(err_generic!("main_secret unset, can't decrypt key"));
+                return Err(crate::error::Error::generic(
+                    "main_secret unset, can't decrypt key",
+                ));
             }
         } else {
             self.key.to_vec()
@@ -691,6 +875,17 @@ impl From<EndpointSecretInternal> for sea_orm::Value {
 }
 
 impl sea_orm::TryGetable for EndpointSecretInternal {
+    fn try_get_by<I: sea_orm::ColIdx>(
+        res: &sea_orm::QueryResult,
+        index: I,
+    ) -> Result<Self, sea_orm::TryGetError> {
+        match Vec::<u8>::try_get_by(res, index) {
+            Ok(v) => EndpointSecretInternal::from_vec(v)
+                .map_err(|x| sea_orm::TryGetError::DbErr(sea_orm::DbErr::Type(x.to_string()))),
+            Err(e) => Err(e),
+        }
+    }
+
     fn try_get(
         res: &sea_orm::QueryResult,
         pre: &str,
@@ -725,7 +920,11 @@ impl sea_orm::sea_query::ValueType for EndpointSecretInternal {
     }
 
     fn column_type() -> sea_orm::sea_query::ColumnType {
-        sea_orm::sea_query::ColumnType::Binary(sea_orm::sea_query::BlobSize::Blob(None))
+        sea_orm::sea_query::ColumnType::Binary(
+            Self::KEY_SIZE
+                .try_into()
+                .expect("Key size is not more than u32::MAX"),
+        )
     }
 
     fn array_type() -> sea_orm::sea_query::ArrayType {
@@ -831,7 +1030,7 @@ impl<'de> Deserialize<'de> for EndpointSecret {
 }
 
 impl Validate for EndpointSecret {
-    fn validate(&self) -> std::result::Result<(), ValidationErrors> {
+    fn validate(&self) -> Result<(), ValidationErrors> {
         let mut errors = ValidationErrors::new();
 
         match self {
@@ -879,8 +1078,20 @@ impl JsonSchema for EndpointSecret {
                 pattern: Some(KEY_PATTERN.to_string()),
                 ..Default::default()
             }));
+            obj.metadata = Some(Box::new(schemars::schema::Metadata{
+                description: Some("The endpoint's verification secret. If `null` is passed, a secret is automatically generated. Format: `base64` encoded random bytes optionally prefixed with `whsec_`. Recommended size: 24.".to_string()),
+                .. Default::default()
+            }));
+            obj.extensions.insert(
+                "example".to_string(),
+                serde_json::Value::String("whsec_C2FVsBQIhrscChlQIMV+b5sSYspob7oD".to_string()),
+            );
         }
         schema
+    }
+
+    fn is_referenceable() -> bool {
+        false
     }
 }
 
@@ -946,41 +1157,53 @@ fn validate_header_key(k: &str, errors: &mut ValidationErrors) {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Default, JsonSchema)]
+#[schemars(transparent)]
 pub struct EndpointHeaders(pub HashMap<String, String>);
 json_wrapper!(EndpointHeaders);
+
+const HEADER_MAX_LENGTH: usize = 4096;
 
 impl<'de> Deserialize<'de> for EndpointHeaders {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
     {
-        HashMap::deserialize(deserializer)
-            .map(|x: HashMap<String, String>| x.into_iter().collect())
-            .map(EndpointHeaders)
+        let headers: HashMap<String, String> = HashMap::deserialize(deserializer)?;
+
+        validate_header_map(&headers).map_err(serde::de::Error::custom)?;
+
+        Ok(EndpointHeaders(headers))
     }
 }
 
-impl Validate for EndpointHeaders {
-    fn validate(&self) -> std::result::Result<(), ValidationErrors> {
-        let mut errors = ValidationErrors::new();
-        self.0.iter().for_each(|(k, v)| {
-            validate_header_key(k, &mut errors);
-            if let Err(_e) = http::header::HeaderValue::try_from(v) {
-                errors.add(
-                    ALL_ERROR,
-                    validation_error(Some("header"), Some("Invalid Header Value.")),
-                );
-            }
-        });
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(errors)
+fn validate_header_map(headers: &HashMap<String, String>) -> Result<(), ValidationErrors> {
+    let mut errors = ValidationErrors::new();
+    for (k, v) in headers {
+        validate_header_key(k, &mut errors);
+
+        if let Err(_e) = http::header::HeaderValue::try_from(v) {
+            errors.add(
+                ALL_ERROR,
+                validation_error(Some("header"), Some("Invalid Header Value.")),
+            );
         }
+
+        if v.len() > HEADER_MAX_LENGTH {
+            errors.add(
+                ALL_ERROR,
+                validation_error(Some("header"), Some("Maximum header length is 4096 bytes")),
+            );
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
     }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Default, JsonSchema)]
+#[schemars(transparent)]
 pub struct EndpointHeadersPatch(pub HashMap<String, Option<String>>);
 json_wrapper!(EndpointHeadersPatch);
 
@@ -996,7 +1219,7 @@ impl<'de> Deserialize<'de> for EndpointHeadersPatch {
 }
 
 impl Validate for EndpointHeadersPatch {
-    fn validate(&self) -> std::result::Result<(), ValidationErrors> {
+    fn validate(&self) -> Result<(), ValidationErrors> {
         let mut errors = ValidationErrors::new();
         self.0
             .iter()
@@ -1009,15 +1232,94 @@ impl Validate for EndpointHeadersPatch {
     }
 }
 
+/// A macro to which you pass the list of variants of an enum using `repr(N)`
+/// and it returns a `Vec<(N, String)>`, where each element is `(value, "VariantStringified")`
+macro_rules! repr_enum {
+    ($($variant:ident),+) => {
+        vec![
+            $(($variant.into(), stringify!($variant).to_string())),+
+        ]
+    }
+}
+
+/// Generates a `JsonSchema` implementation for an enum using `repr(N)`. The
+/// enum must also derive `IntoPrimitive`.
+///
+/// Arguments are:
+/// 1. Name of the enum type, `Foo`
+/// 2. The repr type used, e.g. in case of `repr(i16)` it must be `i16`
+/// 3. The string description to be used in the docs.
+///
+/// Remaining arguments must be the variants in order. For example:
+///
+/// ```ignore
+/// #[derive(IntoPrimitive)]
+/// #[repr(u8)]
+/// enum MyEnum {
+///     Foo = 0,
+///     Bar = 1,
+///     Qux = 5,
+/// }
+///
+/// jsonschema_for_repr_enum! {
+///     MyEnum,
+///     u8,
+///     "My nice little enum",
+///     Foo, Bar, Qux
+/// }
+/// ```
+macro_rules! jsonschema_for_repr_enum {
+    ($tyname:ty, $repr_ty:ty, $descr:expr, $($variant:ident),+) => {
+        impl JsonSchema for $tyname {
+            fn schema_name() -> String {
+                stringify!($tyname).to_string()
+            }
+
+            fn json_schema(_: &mut schemars::gen::SchemaGenerator) -> schemars::schema::Schema {
+                use schemars::schema::{InstanceType, Metadata, Schema, SchemaObject, SingleOrVec};
+                use $tyname::*;
+
+                // A list of variant values and their corresponding name.
+                let variants: Vec<($repr_ty, String)> = repr_enum!($($variant),+);
+                // The list of possible enum primitive values.
+                let values = variants.iter().map(|(value, _)| serde_json::json!(value)).collect();
+                // The list of nice variant names the above values correspond to.
+                let variant_names = variants.iter().map(|(_, name)| serde_json::Value::String(name.clone())).collect();
+
+                Schema::Object(SchemaObject{
+                    metadata: Some(Box::new(Metadata {
+                        title: Some(Self::schema_name()),
+                        description: Some($descr.to_string()),
+                        ..Default::default()
+                    })),
+                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Integer))),
+                    enum_values: Some(values),
+                    extensions: indexmap::indexmap!{
+                        "x-enum-varnames".to_string() => serde_json::Value::Array(variant_names),
+                    },
+                    ..Default::default()
+                })
+            }
+        }
+    }
+}
+
 #[repr(i16)]
-#[derive(Clone, Debug, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive, JsonSchema)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
 pub enum MessageAttemptTriggerType {
     Scheduled = 0,
     Manual = 1,
 }
 
+jsonschema_for_repr_enum! {
+    MessageAttemptTriggerType,
+    i16,
+    "The reason an attempt was made:\n- Scheduled = 0\n- Manual = 1",
+    Scheduled, Manual
+}
+
 #[repr(i16)]
-#[derive(Clone, Debug, Copy, PartialEq, IntoPrimitive, TryFromPrimitive, Hash, Eq, JsonSchema)]
+#[derive(Clone, Debug, Copy, PartialEq, IntoPrimitive, TryFromPrimitive, Hash, Eq)]
 pub enum MessageStatus {
     Success = 0,
     Pending = 1,
@@ -1025,8 +1327,15 @@ pub enum MessageStatus {
     Sending = 3,
 }
 
+jsonschema_for_repr_enum! {
+    MessageStatus,
+    i16,
+    "The sending status of the message:\n- Success = 0\n- Pending = 1\n- Fail = 2\n- Sending = 3",
+    Success, Pending, Fail, Sending
+}
+
 #[repr(i16)]
-#[derive(Clone, Debug, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive, JsonSchema)]
+#[derive(Clone, Debug, Copy, PartialEq, Eq, IntoPrimitive, TryFromPrimitive)]
 pub enum StatusCodeClass {
     CodeNone = 0,
     Code1xx = 100,
@@ -1036,17 +1345,59 @@ pub enum StatusCodeClass {
     Code5xx = 500,
 }
 
+jsonschema_for_repr_enum! {
+    StatusCodeClass,
+    i16,
+    "The different classes of HTTP status codes:\n- CodeNone = 0\n- Code1xx = 100\n- Code2xx = 200\n- Code3xx = 300\n- Code4xx = 400\n- Code5xx = 500",
+    CodeNone, Code1xx, Code2xx, Code3xx, Code4xx, Code5xx
+}
+
 enum_wrapper!(MessageAttemptTriggerType);
 enum_wrapper!(MessageStatus);
 enum_wrapper!(StatusCodeClass);
 
+#[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize)]
+pub struct FeatureFlag(pub String);
+
+common_jsonschema_impl!(
+    FeatureFlag,
+    crate::core::types::StringSchema {
+        string_validation: Some(schemars::schema::StringValidation {
+            min_length: None,
+            max_length: Some(256),
+            pattern: Some(r"^[a-zA-Z0-9\-_.]+$".to_string()),
+        }),
+        example: Some("cool-new-feature".to_string()),
+    }
+);
+
+string_wrapper_impl!(FeatureFlag);
+
+impl<'de> Deserialize<'de> for FeatureFlag {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        String::deserialize(deserializer).and_then(|s| {
+            validate_limited_str(&s).map_err(serde::de::Error::custom)?;
+            Ok(FeatureFlag(s))
+        })
+    }
+}
+
+pub type FeatureFlagSet = HashSet<FeatureFlag>;
+
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::core::types::{EventChannel, EventTypeName};
-
     use std::collections::HashMap;
+
     use validator::Validate;
+
+    use super::{
+        validate_header_map, ApplicationId, ApplicationUid, EndpointHeaders, EndpointHeadersPatch,
+        EndpointSecret, EventChannel, EventTypeName,
+    };
+    use crate::core::cryptography::AsymmetricKey;
 
     #[test]
     fn test_id_validation() {
@@ -1072,9 +1423,15 @@ mod tests {
 
         // Check length
         let long_str: String = "X".repeat(300);
-        let app_id = ApplicationUid(long_str.clone());
+        let app_id = ApplicationId(long_str.clone());
         assert!(app_id.validate().is_err());
         let app_uid = ApplicationUid(long_str);
+        assert!(app_uid.validate().is_err());
+
+        let empty_str: String = "".to_owned();
+        let app_id = ApplicationId(empty_str.clone());
+        assert!(app_id.validate().is_err());
+        let app_uid = ApplicationUid(empty_str);
         assert!(app_uid.validate().is_err());
     }
 
@@ -1091,6 +1448,10 @@ mod tests {
         // Check length
         let long_str: String = "X".repeat(300);
         let evt_name = EventTypeName(long_str);
+        assert!(evt_name.validate().is_err());
+
+        let empty_str = "".to_owned();
+        let evt_name = EventTypeName(empty_str);
         assert!(evt_name.validate().is_err());
     }
 
@@ -1117,29 +1478,29 @@ mod tests {
             ("also-valid".to_owned(), "true".to_owned()),
         ]);
         let endpoint_headers = EndpointHeaders(hdr_map);
-        endpoint_headers.validate().unwrap();
+        validate_header_map(&endpoint_headers.0).unwrap();
 
         let hdr_map = HashMap::from([
             ("invalid?".to_owned(), "true".to_owned()),
             ("valid".to_owned(), "true".to_owned()),
         ]);
         let endpoint_headers = EndpointHeaders(hdr_map);
-        assert!(endpoint_headers.validate().is_err());
+        assert!(validate_header_map(&endpoint_headers.0).is_err());
 
         let hdr_map = HashMap::from([
             ("invalid\0".to_owned(), "true".to_owned()),
             ("valid".to_owned(), "true".to_owned()),
         ]);
         let endpoint_headers = EndpointHeaders(hdr_map);
-        assert!(endpoint_headers.validate().is_err());
+        assert!(validate_header_map(&endpoint_headers.0).is_err());
 
         let hdr_map = HashMap::from([("User-Agent".to_string(), "true".to_owned())]);
         let endpoint_headers = EndpointHeaders(hdr_map);
-        assert!(endpoint_headers.validate().is_err());
+        assert!(validate_header_map(&endpoint_headers.0).is_err());
 
         let hdr_map = HashMap::from([("X-Amz-".to_string(), "true".to_owned())]);
         let endpoint_headers = EndpointHeaders(hdr_map);
-        assert!(endpoint_headers.validate().is_err());
+        assert!(validate_header_map(&endpoint_headers.0).is_err());
     }
 
     #[test]

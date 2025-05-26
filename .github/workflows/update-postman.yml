@@ -1,17 +1,21 @@
 name: Update Postman Collection
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Mega Releaser
+    types:
+      - completed
 
 jobs:
   postman:
     name: Update Postman Collection
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    environment: release
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
       - name: Install Dependencies
         run: yarn

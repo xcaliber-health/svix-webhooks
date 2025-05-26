@@ -15,13 +15,12 @@ use models::{application, endpoint, eventtype, message, messageattempt, messaged
 static MIGRATIONS: sqlx::migrate::Migrator = sqlx::migrate!();
 
 async fn connect(dsn: &str, max_pool_size: u16) -> sqlx::Pool<sqlx::Postgres> {
-    tracing::debug!("DB: Initializing pool");
     if DbBackend::Postgres.is_prefix_of(dsn) {
         PgPoolOptions::new()
             .max_connections(max_pool_size.into())
             .connect(dsn)
             .await
-            .expect("Error connectiong to Postgres")
+            .expect("Error connecting to Postgres")
     } else {
         panic!("db_dsn format not recognized. {dsn}")
     }
@@ -118,17 +117,4 @@ pub async fn wipe_org(cfg: &Configuration, org_id: OrganizationId) {
         .exec(&db)
         .await
         .unwrap_or_else(|_| panic!("Error deleting event types associated with org ID {org_id}"));
-}
-
-#[macro_export]
-/// Runs an async closure inside of a DB Transaction. The closure should return an [`error::Result<T>`]. If the closure returns an error for any reason, the transaction is rolled back.
-macro_rules! transaction {
-    ($db:expr, $do:expr) => {
-        $crate::ctx!(
-            sea_orm::TransactionTrait::transaction::<_, _, $crate::error::Error>($db, |txn| {
-                std::boxed::Box::pin({ $do(txn) })
-            })
-            .await
-        )
-    };
 }

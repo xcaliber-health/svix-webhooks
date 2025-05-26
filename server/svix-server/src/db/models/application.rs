@@ -1,16 +1,14 @@
 // SPDX-FileCopyrightText: © 2022 Svix Authors
 // SPDX-License-Identifier: MIT
 
-use crate::core::types::{
-    ApplicationId, ApplicationIdOrUid, ApplicationUid, BaseId, OrganizationId,
-};
-use crate::{ctx, error};
 use chrono::Utc;
-use sea_orm::ActiveValue::Set;
-use sea_orm::{entity::prelude::*, Condition};
-use sea_orm::{ConnectionTrait, QueryOrder, QuerySelect};
+use sea_orm::{entity::prelude::*, ActiveValue::Set, Condition};
 
 use super::applicationmetadata;
+use crate::{
+    core::types::{ApplicationId, ApplicationIdOrUid, ApplicationUid, BaseId, OrganizationId},
+    error,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel)]
 #[sea_orm(table_name = "application")]
@@ -60,39 +58,13 @@ impl Model {
         db: &impl ConnectionTrait,
     ) -> error::Result<applicationmetadata::ActiveModel> {
         let query = applicationmetadata::Entity::secure_find(self.id.clone());
-        let metadata = ctx!(query.one(db).await)?
+        let metadata = query
+            .one(db)
+            .await?
             .map(applicationmetadata::ActiveModel::from)
             .unwrap_or_else(|| applicationmetadata::ActiveModel::new(self.id.clone(), None));
 
         Ok(metadata)
-    }
-
-    pub async fn fetch_many_with_metadata(
-        db: &DatabaseConnection,
-        org_id: OrganizationId,
-        limit: u64,
-        after_id: impl Into<Option<ApplicationId>>,
-    ) -> error::Result<impl Iterator<Item = (Self, applicationmetadata::Model)>> {
-        let mut query = Entity::secure_find(org_id)
-            .order_by_asc(Column::Id)
-            .limit(limit);
-
-        if let Some(id) = after_id.into() {
-            query = query.filter(Column::Id.gt(id))
-        }
-
-        let results = ctx!(
-            query
-                .find_also_related(applicationmetadata::Entity)
-                .all(db)
-                .await
-        )?;
-
-        Ok(results.into_iter().map(|(app, metadata)| {
-            let metadata =
-                metadata.unwrap_or_else(|| applicationmetadata::Model::new(app.id.clone()));
-            (app, metadata)
-        }))
     }
 
     pub async fn fetch_with_metadata(
@@ -100,12 +72,10 @@ impl Model {
         org_id: OrganizationId,
         id_or_uid: ApplicationIdOrUid,
     ) -> error::Result<Option<(Self, applicationmetadata::Model)>> {
-        let result = ctx!(
-            Entity::secure_find_by_id_or_uid(org_id, id_or_uid)
-                .find_also_related(applicationmetadata::Entity)
-                .one(db)
-                .await
-        )?;
+        let result = Entity::secure_find_by_id_or_uid(org_id, id_or_uid)
+            .find_also_related(applicationmetadata::Entity)
+            .one(db)
+            .await?;
         Ok(result.map(|(app, metadata)| {
             let metadata =
                 metadata.unwrap_or_else(|| applicationmetadata::Model::new(app.id.clone()));
@@ -114,8 +84,12 @@ impl Model {
     }
 }
 
+#[axum::async_trait]
 impl ActiveModelBehavior for ActiveModel {
-    fn before_save(mut self, _insert: bool) -> Result<Self, DbErr> {
+    async fn before_save<C>(mut self, _db: &C, _insert: bool) -> Result<Self, DbErr>
+    where
+        C: ConnectionTrait,
+    {
         self.updated_at = Set(Utc::now().into());
         Ok(self)
     }

@@ -7,51 +7,81 @@ on:
     paths:
       - 'rust/**'
       - '.github/workflows/rust-lint.yml'
+      - "lib-openapi.json"
   pull_request:
     paths:
       - 'rust/**'
       - '.github/workflows/rust-lint.yml'
+      - "lib-openapi.json"
+
+# When pushing to a PR, cancel any jobs still running for the previous head commit of the PR
+concurrency:
+  # head_ref is only defined for pull requests, run_id is always unique and defined so if this
+  # workflow was not triggered by a pull request, nothing gets cancelled.
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
+  check-fmt:
+    name: Check formatting
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
+
+      - name: rustfmt
+        run: cargo fmt -- --check
+        working-directory: rust
+
+  check-unused-deps:
+    name: Check for unused dependencies
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: taiki-e/install-action@cargo-machete
+
+      - run: cargo machete
+        working-directory: rust
+
   test-versions:
     name: Rust Lint
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         rust: [stable, beta]
     steps:
-    - uses: actions/checkout@master
+    - uses: actions/checkout@v4
 
     - name: Regen openapi libs
-      run: |
-        yarn
-        ./regen_openapi.sh
+      run: ./regen_openapi.py
 
-    - uses: actions-rs/toolchain@v1
+    - uses: dtolnay/rust-toolchain@master
       with:
         toolchain: ${{ matrix.rust }}
-        override: true
-        profile: minimal
-        components: clippy, rustfmt
+        components: clippy
 
-    - uses: Swatinem/rust-cache@v1
+    - uses: Swatinem/rust-cache@v2
       with:
-        working-directory: rust
+        workspaces: "rust -> target"
+        # only save the cache on the main branch
+        # cf https://github.com/Swatinem/rust-cache/issues/95
+        save-if: ${{ github.ref == 'refs/heads/main' }}
+        # include relevant information in the cache name
+        prefix-key: "rust-client-${{ matrix.rust }}"
+
+    - uses: taiki-e/install-action@nextest
 
     - name: Clippy
-      uses: actions-rs/cargo@v1
-      with:
-        command: clippy
-        args: --manifest-path rust/Cargo.toml --all --all-targets --all-features -- -D warnings
-
-    - name: rustfmt
-      uses: actions-rs/cargo@v1
-      with:
-        command: fmt
-        args: --manifest-path rust/Cargo.toml --all -- --check
+      run: cargo clippy --all-targets --all-features -- -D warnings
+      working-directory: rust
 
     - name: Run tests
-      uses: actions-rs/cargo@v1
-      with:
-        command: test
-        args: --manifest-path rust/Cargo.toml --all
+      run: cargo nextest run
+      working-directory: rust

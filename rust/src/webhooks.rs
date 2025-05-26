@@ -1,7 +1,6 @@
 // SPDX-FileCopyrightText: © 2022 Svix Authors
 // SPDX-License-Identifier: MIT
 
-use http::HeaderMap;
 use time::OffsetDateTime;
 
 #[derive(thiserror::Error, Debug)]
@@ -57,7 +56,24 @@ impl Webhook {
         Ok(Webhook { key: secret })
     }
 
-    pub fn verify(&self, payload: &[u8], headers: &HeaderMap) -> Result<(), WebhookError> {
+    pub fn verify<HM: HeaderMap>(&self, payload: &[u8], headers: &HM) -> Result<(), WebhookError> {
+        self.verify_inner(payload, headers, /* enforce_tolerance */ true)
+    }
+
+    pub fn verify_ignoring_timestamp<HM: HeaderMap>(
+        &self,
+        payload: &[u8],
+        headers: &HM,
+    ) -> Result<(), WebhookError> {
+        self.verify_inner(payload, headers, /* enforce_tolerance */ false)
+    }
+
+    fn verify_inner<HM: HeaderMap>(
+        &self,
+        payload: &[u8],
+        headers: &HM,
+        enforce_tolerance: bool,
+    ) -> Result<(), WebhookError> {
         let msg_id = Self::get_header(headers, SVIX_MSG_ID_KEY, UNBRANDED_MSG_ID_KEY, "id")?;
         let msg_signature = Self::get_header(
             headers,
@@ -73,7 +89,9 @@ impl Webhook {
         )
         .and_then(Self::parse_timestamp)?;
 
-        Self::verify_timestamp(msg_ts)?;
+        if enforce_tolerance {
+            Self::verify_timestamp(msg_ts)?;
+        }
 
         let versioned_signature = self.sign(msg_id, msg_ts, payload)?;
         let expected_signature = versioned_signature
@@ -86,10 +104,13 @@ impl Webhook {
             .filter_map(|x| x.split_once(','))
             .filter(|x| x.0 == SIGNATURE_VERSION)
             .any(|x| {
-                x.1.bytes()
-                    .zip(expected_signature.bytes())
-                    .fold(0, |acc, (a, b)| acc | (a ^ b))
-                    == 0
+                (x.1.len() == expected_signature.len())
+                    && (x
+                        .1
+                        .bytes()
+                        .zip(expected_signature.bytes())
+                        .fold(0, |acc, (a, b)| acc | (a ^ b))
+                        == 0)
             })
             .then_some(())
             .ok_or(WebhookError::InvalidSignature)
@@ -109,18 +130,20 @@ impl Webhook {
         Ok(format!("{SIGNATURE_VERSION},{encoded}"))
     }
 
-    fn get_header<'a>(
-        headers: &'a HeaderMap,
+    fn get_header<'a, HM: HeaderMap>(
+        headers: &'a HM,
         svix_hdr: &'static str,
         unbranded_hdr: &'static str,
         err_name: &'static str,
     ) -> Result<&'a str, WebhookError> {
+        use private::HeaderValueSealed as _;
+
         headers
-            .get(svix_hdr)
-            .or_else(|| headers.get(unbranded_hdr))
+            ._get(svix_hdr)
+            .or_else(|| headers._get(unbranded_hdr))
             .ok_or(WebhookError::MissingHeader(err_name))?
-            .to_str()
-            .map_err(|_| WebhookError::InvalidHeader(err_name))
+            ._to_str()
+            .ok_or(WebhookError::InvalidHeader(err_name))
     }
 
     fn parse_timestamp(hdr: &str) -> Result<i64, WebhookError> {
@@ -139,14 +162,60 @@ impl Webhook {
     }
 }
 
+/// Trait to abstract over the `HeaderMap` types from both v0.2 and v1.0 of the
+/// `http` crate.
+pub trait HeaderMap: private::HeaderMapSealed {}
+
+impl HeaderMap for http02::HeaderMap {}
+impl HeaderMap for http1::HeaderMap {}
+
+mod private {
+    pub trait HeaderMapSealed {
+        type HeaderValue: HeaderValueSealed;
+        fn _get(&self, name: &str) -> Option<&Self::HeaderValue>;
+    }
+
+    impl HeaderMapSealed for http02::HeaderMap {
+        type HeaderValue = http02::HeaderValue;
+        fn _get(&self, name: &str) -> Option<&Self::HeaderValue> {
+            self.get(name)
+        }
+    }
+    impl HeaderMapSealed for http1::HeaderMap {
+        type HeaderValue = http1::HeaderValue;
+        fn _get(&self, name: &str) -> Option<&Self::HeaderValue> {
+            self.get(name)
+        }
+    }
+
+    pub trait HeaderValueSealed {
+        fn _to_str(&self) -> Option<&str>;
+    }
+
+    impl HeaderValueSealed for http02::HeaderValue {
+        fn _to_str(&self) -> Option<&str> {
+            self.to_str().ok()
+        }
+    }
+    impl HeaderValueSealed for http1::HeaderValue {
+        fn _to_str(&self) -> Option<&str> {
+            self.to_str().ok()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use http02::HeaderMap;
+    use time::OffsetDateTime;
 
-    use super::*;
-    use http::HeaderMap;
+    use super::{
+        Webhook, SVIX_MSG_ID_KEY, SVIX_MSG_SIGNATURE_KEY, SVIX_MSG_TIMESTAMP_KEY,
+        UNBRANDED_MSG_ID_KEY, UNBRANDED_MSG_SIGNATURE_KEY, UNBRANDED_MSG_TIMESTAMP_KEY,
+    };
 
     fn get_svix_headers(msg_id: &str, signature: &str) -> HeaderMap {
-        let mut headers = http::header::HeaderMap::new();
+        let mut headers = HeaderMap::new();
         headers.insert(SVIX_MSG_ID_KEY, msg_id.parse().unwrap());
         headers.insert(SVIX_MSG_SIGNATURE_KEY, signature.parse().unwrap());
         headers.insert(
@@ -161,7 +230,7 @@ mod tests {
     }
 
     fn get_unbranded_headers(msg_id: &str, signature: &str) -> HeaderMap {
-        let mut headers = http::header::HeaderMap::new();
+        let mut headers = HeaderMap::new();
         headers.insert(UNBRANDED_MSG_ID_KEY, msg_id.parse().unwrap());
         headers.insert(UNBRANDED_MSG_SIGNATURE_KEY, signature.parse().unwrap());
         headers.insert(
@@ -224,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_incorrect_timestamp() {
+    fn test_verify_partial_signature() {
         let secret = "whsec_C2FVsBQIhrscChlQIMV+b5sSYspob7oD".to_owned();
         let msg_id = "msg_27UH4WbU6Z5A5EzD8u03UvzRbpk";
         let payload = br#"{"email":"test@example.com","username":"test_user"}"#;
@@ -234,18 +303,70 @@ mod tests {
             .sign(msg_id, OffsetDateTime::now_utc().unix_timestamp(), payload)
             .unwrap();
 
-        let mut headers = get_svix_headers(msg_id, &signature);
+        // Just `v1,`
+        for mut headers in [
+            get_svix_headers(msg_id, &signature),
+            get_unbranded_headers(msg_id, &signature),
+        ] {
+            let partial = format!(
+                "{},",
+                signature.split(',').collect::<Vec<&str>>().first().unwrap()
+            );
+            headers.insert(SVIX_MSG_SIGNATURE_KEY, partial.parse().unwrap());
+            headers.insert(UNBRANDED_MSG_SIGNATURE_KEY, partial.parse().unwrap());
+            assert!(wh.verify(payload, &headers).is_err());
+        }
+
+        // Non-empty but still partial signature (first few bytes)
+        for mut headers in [
+            get_svix_headers(msg_id, &signature),
+            get_unbranded_headers(msg_id, &signature),
+        ] {
+            let partial = &signature[0..8];
+            headers.insert(SVIX_MSG_SIGNATURE_KEY, partial.parse().unwrap());
+            headers.insert(UNBRANDED_MSG_SIGNATURE_KEY, partial.parse().unwrap());
+            assert!(wh.verify(payload, &headers).is_err());
+        }
+    }
+
+    #[test]
+    fn test_verify_incorrect_timestamp() {
+        let secret = "whsec_C2FVsBQIhrscChlQIMV+b5sSYspob7oD".to_owned();
+        let msg_id = "msg_27UH4WbU6Z5A5EzD8u03UvzRbpk";
+        let payload = br#"{"email":"test@example.com","username":"test_user"}"#;
+        let wh = Webhook::new(&secret).unwrap();
+
+        // Checks that timestamps that are in the future or too old are rejected by
+        // `verify` but okay for `verify_ignoring_timestamp`.
         for ts in [
             OffsetDateTime::now_utc().unix_timestamp() - (super::TOLERANCE_IN_SECONDS + 1),
             OffsetDateTime::now_utc().unix_timestamp() + (super::TOLERANCE_IN_SECONDS + 1),
         ] {
+            let signature = wh.sign(msg_id, ts, payload).unwrap();
+            let mut headers = get_svix_headers(msg_id, &signature);
             headers.insert(
                 super::SVIX_MSG_TIMESTAMP_KEY,
                 ts.to_string().parse().unwrap(),
             );
 
             assert!(wh.verify(payload, &headers,).is_err());
+            // Timestamp tolerance is not considered in this case.
+            assert!(wh.verify_ignoring_timestamp(payload, &headers,).is_ok());
         }
+
+        let ts = OffsetDateTime::now_utc().unix_timestamp();
+        let signature = wh.sign(msg_id, ts, payload).unwrap();
+        let mut headers = get_svix_headers(msg_id, &signature);
+        headers.insert(
+            super::SVIX_MSG_TIMESTAMP_KEY,
+            // Timestamp mismatch!
+            (ts + 1).to_string().parse().unwrap(),
+        );
+
+        // Both versions should reject the timestamp if it's not the same one used to
+        // produce the signature.
+        assert!(wh.verify(payload, &headers,).is_err());
+        assert!(wh.verify_ignoring_timestamp(payload, &headers,).is_err());
     }
 
     #[test]

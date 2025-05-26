@@ -1,91 +1,102 @@
 // SPDX-FileCopyrightText: © 2022 Svix Authors
 // SPDX-License-Identifier: MIT
 
-use std::error;
-use std::fmt;
+use std::{error, fmt, panic::Location};
 
 use aide::OperationOutput;
-use axum::extract::rejection::ExtensionRejection;
-use axum::extract::rejection::PathRejection;
-use axum::extract::rejection::TypedHeaderRejection;
-use axum::headers::authorization::Bearer;
-use axum::headers::Authorization;
-use axum::response::IntoResponse;
-use axum::response::Response;
-use axum::Json;
-use axum::TypedHeader;
+use axum::{
+    extract::rejection::{ExtensionRejection, PathRejection},
+    response::{IntoResponse, Response},
+    Json,
+};
 use hyper::StatusCode;
 use schemars::JsonSchema;
-use sea_orm::DbErr;
-use sea_orm::RuntimeErr;
-use sea_orm::TransactionError;
+use sea_orm::{DbErr, RuntimeErr, TransactionError};
 use serde::Serialize;
 use serde_json::json;
-use sqlx::Error as SqlxError;
 
-/// A short-hand version of a [std::result::Result] that always returns an Svix [Error].
-pub type Result<T> = std::result::Result<T, Error>;
+use crate::core::webhook_http_client;
+
+/// A short-hand version of a [`std::result::Result`] that defaults to Svix'es [Error].
+pub type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// The error type returned from the Svix API
 #[derive(Debug)]
 pub struct Error {
     // the file name and line number of the error. Used for debugging non Http errors
-    pub trace: Vec<&'static str>,
+    pub trace: Vec<&'static Location<'static>>,
     pub typ: ErrorType,
 }
 
 impl Error {
-    pub fn generic(s: impl fmt::Display, location: &'static str) -> Self {
-        Self {
-            trace: Self::init_trace(location),
-            typ: ErrorType::Generic(s.to_string()),
-        }
+    #[track_caller]
+    fn new(typ: ErrorType) -> Self {
+        let trace = vec![Location::caller()];
+        Self { trace, typ }
     }
 
-    pub fn database(s: impl fmt::Display, location: &'static str) -> Self {
-        Self {
-            trace: Self::init_trace(location),
-            typ: ErrorType::Database(s.to_string()),
-        }
+    #[track_caller]
+    pub fn generic(s: impl fmt::Display) -> Self {
+        Self::new(ErrorType::Generic(s.to_string()))
     }
 
-    pub fn queue(s: impl fmt::Display, location: &'static str) -> Self {
-        Self {
-            trace: Self::init_trace(location),
-            typ: ErrorType::Queue(s.to_string()),
-        }
+    #[track_caller]
+    pub fn database(s: impl fmt::Display) -> Self {
+        Self::new(ErrorType::Database(s.to_string()))
     }
 
-    pub fn validation(s: impl fmt::Display, location: &'static str) -> Self {
-        Self {
-            trace: Self::init_trace(location),
-            typ: ErrorType::Validation(s.to_string()),
-        }
+    #[track_caller]
+    pub fn conflict(e: DbErr) -> Self {
+        Self::new(ErrorType::Conflict(e))
     }
 
+    #[track_caller]
+    pub fn queue(s: impl fmt::Display) -> Self {
+        Self::new(ErrorType::Queue(s.to_string()))
+    }
+
+    #[track_caller]
+    pub fn validation(s: impl fmt::Display) -> Self {
+        Self::new(ErrorType::Validation(s.to_string()))
+    }
+
+    #[track_caller]
     pub fn http(h: HttpError) -> Self {
         Self {
-            trace: vec![], // no debugging necessary
+            trace: Vec::with_capacity(0), // no debugging necessary
             typ: ErrorType::Http(h),
         }
     }
 
-    pub fn cache(s: impl fmt::Display, location: &'static str) -> Self {
-        Self {
-            trace: Self::init_trace(location),
-            typ: ErrorType::Cache(s.to_string()),
-        }
+    #[track_caller]
+    pub fn cache(s: impl fmt::Display) -> Self {
+        Self::new(ErrorType::Cache(s.to_string()))
     }
 
-    fn init_trace(location: &'static str) -> Vec<&'static str> {
-        let mut trace = Vec::with_capacity(10); // somewhat arbitrary capacity, but avoids reallocation when building an error trace later on
-        trace.push(location);
-        trace
+    #[track_caller]
+    pub fn timeout(s: impl fmt::Display) -> Self {
+        Self::new(ErrorType::Timeout(s.to_string()))
+    }
+
+    #[track_caller]
+    pub fn db_timeout(s: impl fmt::Display) -> Self {
+        Self::new(ErrorType::DbTimeout(s.to_string()))
+    }
+
+    #[track_caller]
+    pub fn connection_timeout(e: DbErr) -> Self {
+        Self::new(ErrorType::ConnectionTimeout(e))
+    }
+
+    #[track_caller]
+    pub fn trace(mut self) -> Self {
+        self.trace.push(Location::caller());
+        self
     }
 }
 
 impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.typ.fmt(f)
     }
 }
@@ -98,13 +109,14 @@ impl error::Error for Error {
 
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
+        let stringified: Vec<String> = self.trace.into_iter().map(ToString::to_string).collect();
         match self.typ {
             ErrorType::Http(s) => {
-                tracing::debug!("{:?}, location: {:?}", &s, &self.trace);
+                tracing::debug!("{:?}, location: {:?}", &s, stringified);
                 s.into_response()
             }
             s => {
-                tracing::error!("type: {:?}, location: {:?}", s, &self.trace);
+                tracing::error!("type: {:?}, location: {:?}", s, stringified);
                 (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({}))).into_response()
             }
         }
@@ -115,149 +127,97 @@ impl OperationOutput for Error {
     type Inner = Self;
 }
 
-/// Returns a [&'static str] of the file.rs:<line_number>.
-#[macro_export]
-macro_rules! location {
-    () => {
-        concat!(file!(), ":", line!())
-    };
-}
-
-// Kind of boilerplatey, but these macros make it much easier to use the Error type with diagnostic information
-
-#[macro_export]
-macro_rules! err_generic {
-   ($s:expr) => {
-        $crate::error::Error::generic($s, $crate::location!())
-   };
-   ($($arg:tt)*) => {
-        $crate::error::Error::generic(format!($($arg)*), $crate::location!())
-   }
-}
-
-#[macro_export]
-macro_rules! err_database {
-    ($s:expr) => {
-        $crate::error::Error::database($s, $crate::location!())
-    };
-}
-
-#[macro_export]
-macro_rules! err_queue {
-    ($s:expr) => {
-        $crate::error::Error::queue($s, $crate::location!())
-    };
-}
-
-#[macro_export]
-macro_rules! err_validation {
-    ($s:expr) => {
-        $crate::error::Error::validation($s, $crate::location!())
-    };
-}
-
 pub trait Traceable<T> {
-    fn trace(self, location: &'static str) -> Result<T>;
-}
-
-/// Adds [location!] data to the given result, returning a [crate::error::Result<T>].
-#[macro_export]
-macro_rules! ctx {
-    ($res:expr) => {
-        $crate::error::Traceable::trace($res, $crate::location!())
-    };
+    /// Pushes the current [`Location`] onto the error's trace stack
+    #[track_caller]
+    fn trace(self) -> Result<T>;
 }
 
 impl<T> Traceable<T> for Result<T> {
-    fn trace(self, location: &'static str) -> Result<T> {
-        self.map_err(|mut e| {
-            e.trace.push(location);
-            e
-        })
+    fn trace(self) -> Result<T> {
+        // Using `map_err` would lose `#[track_caller]` information
+        match self {
+            Err(e) => Err(e.trace()),
+            ok => ok,
+        }
     }
 }
 
-impl<T> Traceable<T> for std::result::Result<T, DbErr> {
-    fn trace(self, location: &'static str) -> Result<T> {
-        self.map_err(|err| {
-            let typ = if let DbErr::Query(runtime_error) = err {
-                match runtime_error {
-                    RuntimeErr::SqlxError(sqlx_err) => {
-                        if matches!(sqlx_err, SqlxError::RowNotFound) {
-                            HttpError::not_found(None, None).into()
-                        } else if sqlx_err
-                            .as_database_error()
-                            .and_then(|e| e.code())
-                            .filter(|code| code == "23505") // "duplicate key value violates unique constraint"
-                            .is_some()
-                        {
-                            HttpError::conflict(None, None).into()
-                        } else {
-                            ErrorType::Database(sqlx_err.to_string())
-                        }
-                    }
-                    RuntimeErr::Internal(err) => ErrorType::Database(err),
-                }
-            } else {
-                ErrorType::Database(err.to_string())
-            };
-
-            Error {
-                trace: Error::init_trace(location),
-                typ,
-            }
-        })
+impl From<DbErr> for Error {
+    #[track_caller]
+    fn from(err: DbErr) -> Self {
+        if is_timeout_error(&err) {
+            Error::db_timeout(err)
+        } else if is_conflict_err(&err) {
+            Error::conflict(err)
+        } else if is_connection_timeout_error(&err) {
+            Error::connection_timeout(err)
+        } else {
+            Error::database(err)
+        }
     }
 }
 
-impl<T> Traceable<T> for std::result::Result<T, redis::RedisError> {
-    fn trace(self, location: &'static str) -> Result<T> {
-        self.map_err(|e| Error::queue(e, location))
+impl From<redis::RedisError> for Error {
+    #[track_caller]
+    fn from(value: redis::RedisError) -> Self {
+        Error::queue(value)
     }
 }
 
-impl<T, E: error::Error + 'static> Traceable<T> for std::result::Result<T, bb8::RunError<E>> {
-    fn trace(self, location: &'static str) -> Result<T> {
-        self.map_err(|e| Error::queue(e, location))
+impl From<omniqueue::QueueError> for Error {
+    #[track_caller]
+    fn from(value: omniqueue::QueueError) -> Self {
+        Error::queue(value)
     }
 }
 
-impl<T> Traceable<T> for std::result::Result<T, ExtensionRejection> {
-    fn trace(self, location: &'static str) -> Result<T> {
-        self.map_err(|e| Error::generic(e, location))
+impl<E: error::Error + 'static> From<bb8::RunError<E>> for Error {
+    #[track_caller]
+    fn from(value: bb8::RunError<E>) -> Self {
+        Error::queue(value)
     }
 }
 
-impl<T> Traceable<T> for std::result::Result<T, PathRejection> {
-    fn trace(self, location: &'static str) -> Result<T> {
-        self.map_err(|e| Error::generic(e, location))
+impl From<ExtensionRejection> for Error {
+    #[track_caller]
+    fn from(value: ExtensionRejection) -> Self {
+        Error::generic(value)
     }
 }
 
-impl Traceable<TypedHeader<Authorization<Bearer>>>
-    for std::result::Result<TypedHeader<Authorization<Bearer>>, TypedHeaderRejection>
-{
-    fn trace(self, _location: &'static str) -> Result<TypedHeader<Authorization<Bearer>>> {
-        self.map_err(|_| HttpError::unauthorized(None, Some("Invalid token".to_string())).into())
+impl From<PathRejection> for Error {
+    #[track_caller]
+    fn from(value: PathRejection) -> Self {
+        Error::generic(value)
     }
 }
 
-impl<T> Traceable<T> for std::result::Result<T, crate::core::cache::Error> {
-    fn trace(self, location: &'static str) -> Result<T> {
-        self.map_err(|e| Error::cache(e, location))
+impl From<crate::core::cache::Error> for Error {
+    #[track_caller]
+    fn from(value: crate::core::cache::Error) -> Self {
+        Error::cache(value)
     }
 }
 
-impl<T> Traceable<T> for std::result::Result<T, TransactionError<Error>> {
-    fn trace(self, location: &'static str) -> Result<T> {
-        self.map_err(|e| match e {
-            TransactionError::Connection(db_err) => Error::database(db_err, location),
+impl From<TransactionError<Error>> for Error {
+    #[track_caller]
+    fn from(value: TransactionError<Error>) -> Self {
+        match value {
+            TransactionError::Connection(db_err) => Error::database(db_err),
             TransactionError::Transaction(crate_err) => crate_err, // preserve the trace that comes from within the transaction
-        })
+        }
     }
 }
 
-#[derive(Debug, Clone)]
+impl From<lapin::Error> for Error {
+    #[track_caller]
+    fn from(value: lapin::Error) -> Self {
+        Error::queue(format!("{value:?}"))
+    }
+}
+
+#[derive(Debug)]
 pub enum ErrorType {
     /// A generic error
     Generic(String),
@@ -271,10 +231,18 @@ pub enum ErrorType {
     Http(HttpError),
     /// Cache error
     Cache(String),
+    /// Timeout error
+    Timeout(String),
+    /// Database timeout error
+    DbTimeout(String),
+    /// Connection timeout error
+    ConnectionTimeout(DbErr),
+    /// Conflict error
+    Conflict(DbErr),
 }
 
 impl fmt::Display for ErrorType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Generic(s) => s.fmt(f),
             Self::Database(s) => s.fmt(f),
@@ -282,6 +250,10 @@ impl fmt::Display for ErrorType {
             Self::Validation(s) => s.fmt(f),
             Self::Http(s) => s.fmt(f),
             Self::Cache(s) => s.fmt(f),
+            Self::Timeout(s) => s.fmt(f),
+            Self::DbTimeout(s) => s.fmt(f),
+            Self::ConnectionTimeout(s) => s.fmt(f),
+            Self::Conflict(s) => s.fmt(f),
         }
     }
 }
@@ -292,11 +264,25 @@ impl From<HttpError> for ErrorType {
     }
 }
 
+// Python generation relies on the title of this being `HttpError`
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(rename = "HttpErrorOut", title = "HttpError")]
+pub struct StandardHttpError {
+    code: String,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[schemars(rename = "HTTPValidationError")]
+pub struct ValidationHttpError {
+    detail: Vec<ValidationErrorItem>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum HttpErrorBody {
-    Standard { code: String, detail: String },
-    Validation { detail: Vec<ValidationErrorItem> },
+    Standard(StandardHttpError),
+    Validation(ValidationHttpError),
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, JsonSchema)]
@@ -305,7 +291,7 @@ pub enum HttpErrorBody {
 /// error.
 pub struct ValidationErrorItem {
     /// The location as a [`Vec`] of [`String`]s -- often in the form `["body", "field_name"]`,
-    /// `["query", "field_name"]`, etc. They may, however, be arbitarily deep.
+    /// `["query", "field_name"]`, etc. They may, however, be arbitrarily deep.
     pub loc: Vec<String>,
 
     /// The message accompanying the validation error item.
@@ -319,7 +305,7 @@ pub struct ValidationErrorItem {
 
 #[derive(Debug, Clone)]
 pub struct HttpError {
-    status: StatusCode,
+    pub status: StatusCode,
     body: HttpErrorBody,
 }
 
@@ -327,7 +313,7 @@ impl HttpError {
     fn new_standard(status: StatusCode, code: String, detail: String) -> Self {
         Self {
             status,
-            body: HttpErrorBody::Standard { code, detail },
+            body: HttpErrorBody::Standard(StandardHttpError { code, detail }),
         }
     }
 
@@ -374,7 +360,7 @@ impl HttpError {
     pub fn unprocessable_entity(detail: Vec<ValidationErrorItem>) -> Self {
         Self {
             status: StatusCode::UNPROCESSABLE_ENTITY,
-            body: HttpErrorBody::Validation { detail },
+            body: HttpErrorBody::Validation(ValidationHttpError { detail }),
         }
     }
 
@@ -393,6 +379,14 @@ impl HttpError {
             detail.unwrap_or_else(|| "This API endpoint is not yet implemented.".to_owned()),
         )
     }
+
+    pub fn too_large(code: Option<String>, detail: Option<String>) -> Self {
+        Self::new_standard(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            code.unwrap_or_else(|| "payload_too_large".to_owned()),
+            detail.unwrap_or_else(|| "Request payload is too large.".to_owned()),
+        )
+    }
 }
 
 impl From<HttpError> for Error {
@@ -402,15 +396,15 @@ impl From<HttpError> for Error {
 }
 
 impl fmt::Display for HttpError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.body {
-            HttpErrorBody::Standard { code, detail } => write!(
+            HttpErrorBody::Standard(StandardHttpError { code, detail }) => write!(
                 f,
-                "status={} code=\"{}\" detail=\"{}\"",
-                self.status, code, detail
+                "status={} code=\"{code}\" detail=\"{detail}\"",
+                self.status
             ),
 
-            HttpErrorBody::Validation { detail } => {
+            HttpErrorBody::Validation(ValidationHttpError { detail }) => {
                 write!(
                     f,
                     "status={} detail={}",
@@ -427,4 +421,128 @@ impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
         (self.status, Json(self.body)).into_response()
     }
+}
+
+impl From<ErrorType> for Error {
+    fn from(typ: ErrorType) -> Self {
+        Self { trace: vec![], typ }
+    }
+}
+
+// FIXME - delete
+impl From<crate::core::webhook_http_client::Error> for Error {
+    fn from(err: webhook_http_client::Error) -> Error {
+        match err {
+            webhook_http_client::Error::TimedOut => Self::timeout(err),
+            _ => Error::generic(err),
+        }
+    }
+}
+
+/// Utility function for Converting a [`DbErr`] into an [`Error`].
+///
+/// The error "duplicate key value violates unique constraint" is converted to
+/// an HTTP "conflict" error. This is to be used in `map_err` calls on
+/// creation/update of records.
+pub fn http_error_on_conflict(db_err: DbErr) -> Error {
+    if is_conflict_err(&db_err) {
+        HttpError::conflict(None, None).into()
+    } else {
+        Error::database(db_err)
+    }
+}
+
+pub fn is_conflict_err(db_err: &DbErr) -> bool {
+    use DbErr as E;
+    let rt_err = match db_err {
+        E::Exec(e) | E::Query(e) | E::Conn(e) => e,
+        // If sqlx ever extends this enum, I want a compile time error so we're forced to update this function.
+        // Hence we list out all the enumerations, rather than using a default match statement
+        E::TryIntoErr { .. }
+        | E::ConvertFromU64(_)
+        | E::UnpackInsertId
+        | E::UpdateGetPrimaryKey
+        | E::RecordNotFound(_)
+        | E::AttrNotSet(_)
+        | E::Custom(_)
+        | E::Type(_)
+        | E::Json(_)
+        | E::Migration(_)
+        | E::RecordNotInserted
+        | E::RecordNotUpdated
+        | E::ConnectionAcquire(_) => return false,
+    };
+
+    let sqlx_err = match rt_err {
+        RuntimeErr::SqlxError(e) => e,
+        RuntimeErr::Internal(_) => return false,
+    };
+
+    sqlx_err
+        .as_database_error()
+        .and_then(|e| e.code())
+        .filter(|code| code == "23505")
+        .is_some()
+}
+
+pub fn is_timeout_error(db_err: &DbErr) -> bool {
+    let runtime_err = match &db_err {
+        DbErr::Conn(e) | DbErr::Exec(e) | DbErr::Query(e) => e,
+        _ => return false,
+    };
+
+    let sqlx_err = match runtime_err {
+        RuntimeErr::SqlxError(e) => e,
+        RuntimeErr::Internal(_) => return false,
+    };
+
+    match sqlx_err.as_database_error() {
+        // STUPID - no other good way to ID statement timeouts
+        Some(e) => e
+            .message()
+            .contains("canceling statement due to statement timeout"),
+        None => false,
+    }
+}
+
+/// Returns true if the DbErr results from weirdness with a slow/long connection.
+/// This is distinct from [is_timeout_error], which reports whether the underlying
+/// query actually timed out on the pg side.
+///
+/// [is_connection_timeout_error] reports whether the connection to pg itself was slow
+/// for some reason.
+pub fn is_connection_timeout_error(db_err: &DbErr) -> bool {
+    use DbErr as E;
+    let rt_err = match db_err {
+        E::ConnectionAcquire(_) | E::Conn(_) => return true,
+        E::Exec(e) | E::Query(e) => e.to_string(),
+
+        // If sqlx ever extends this enum, I want a compile time error so we're forced to update this function.
+        // Hence we list out all the enumerations, rather than using a default match statement
+        E::TryIntoErr { .. }
+        | E::ConvertFromU64(_)
+        | E::UnpackInsertId
+        | E::UpdateGetPrimaryKey
+        | E::RecordNotFound(_)
+        | E::AttrNotSet(_)
+        | E::Custom(_)
+        | E::Type(_)
+        | E::Json(_)
+        | E::Migration(_)
+        | E::RecordNotInserted
+        | E::RecordNotUpdated => return false,
+    };
+
+    const ERRORS: [&str; 3] = [
+        "Connection pool timed out",
+        "Connection reset by peer",
+        "unexpected end of file",
+    ];
+    for e in ERRORS {
+        if rt_err.contains(e) {
+            return true;
+        }
+    }
+
+    false
 }

@@ -1,46 +1,44 @@
 name: Python Release
 
 on:
-  push:
-    tags:
-      - 'v*'
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Mega Releaser
+    types:
+      - completed
 
 jobs:
   build:
-    name: Build source distribution
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
+    name: Build distributions
+    runs-on: ubuntu-24.04
+    environment: release
 
-      - uses: actions/setup-python@v2
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         name: Install Python
         with:
-          python-version: '3.8'
+          python-version: '3.11'
 
       - name: Install deps
         run: |
           cd python
           python -m pip install --upgrade pip
-          python -m pip install -r requirements.txt .
-          python -m pip install -r requirements-dev.txt .
+          python -m pip install -r requirements-dev.txt
 
-      - name: Install setuptools
+      - name: Install build
         run: |
           cd python
-          python -m pip install setuptools
+          python -m pip install build
 
-      - name: Regen openapi libs
+      - name: Build distributions
         run: |
           cd python
-          ./scripts/generate_openapi.sh
+          python -m build
 
-      - name: Build sdist
-        run: |
-          cd python
-          python setup.py sdist
-
-      - uses: pypa/gh-action-pypi-publish@master
+      - uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          user: __token__
           password: ${{ secrets.TWINE_PASSWORD }}
           packages_dir: python/dist

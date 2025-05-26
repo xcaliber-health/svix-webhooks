@@ -1,18 +1,29 @@
-name: Javascript Lint
+name: JavaScript Lint
+
 on:
   pull_request:
     paths:
       - "javascript/**"
+      - "lib-openapi.json"
+      - '.github/workflows/javascript-lint.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - "javascript/**"
+      - "lib-openapi.json"
+      - '.github/workflows/javascript-lint.yml'
+
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v4
 
-      - name: Regen openapi libs
-        run: |
-          yarn
-          ./regen_openapi.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 'latest'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Install modules
         run: |
@@ -23,3 +34,8 @@ jobs:
         run: |
           cd javascript
           yarn run lint
+
+      - name: Test
+        run: |
+          cd javascript
+          yarn run test

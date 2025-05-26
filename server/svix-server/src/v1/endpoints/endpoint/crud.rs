@@ -4,66 +4,68 @@ use axum::{
     extract::{Path, State},
     Json,
 };
-use hyper::StatusCode;
-use sea_orm::{entity::prelude::*, ActiveValue::Set, QueryOrder, TransactionTrait};
-use sea_orm::{ActiveModelTrait, DatabaseConnection, QuerySelect};
+use sea_orm::{entity::prelude::*, ActiveValue::Set, QuerySelect, TransactionTrait};
+use svix_server_derive::aide_annotate;
 use url::Url;
 
-use super::{EndpointIn, EndpointOut, EndpointPatch};
+use self::hack::EventTypeNameResult;
+use super::{EndpointIn, EndpointOut, EndpointPatch, EndpointUpdate};
 use crate::{
     cfg::Configuration,
     core::{
         operational_webhooks::{EndpointEvent, OperationalWebhook, OperationalWebhookSender},
         permissions,
-        types::{
-            ApplicationIdOrUid, EndpointId, EndpointIdOrUid, EventTypeName, EventTypeNameSet,
-            OrganizationId,
-        },
+        types::{EndpointId, EventTypeName, EventTypeNameSet, OrganizationId},
     },
-    ctx,
     db::models::{application, endpoint, endpointmetadata, eventtype},
-    error::{HttpError, Result, ValidationErrorItem},
+    error::{http_error_on_conflict, HttpError, Result, Traceable, ValidationErrorItem},
     v1::utils::{
+        apply_pagination,
         patch::{patch_field_non_nullable, UnrequiredField, UnrequiredNullableField},
-        EmptyResponse, ListResponse, ModelIn, ModelOut, Pagination, PaginationLimit, ValidatedJson,
-        ValidatedQuery,
+        ApplicationEndpointPath, ApplicationPath, IteratorDirection, JsonStatus, JsonStatusUpsert,
+        ListResponse, ModelIn, ModelOut, NoContent, Ordering, Pagination, PaginationLimit,
+        ReversibleIterator, ValidatedJson, ValidatedQuery,
     },
     AppState,
 };
-use hack::EventTypeNameResult;
 
+/// List the application's endpoints.
+#[aide_annotate(op_id = "v1.endpoint.list")]
 pub(super) async fn list_endpoints(
     State(AppState { ref db, .. }): State<AppState>,
-    pagination: ValidatedQuery<Pagination<EndpointId>>,
+    _: Path<ApplicationPath>,
+    ValidatedQuery(pagination): ValidatedQuery<Pagination<ReversibleIterator<EndpointId>>>,
     permissions::Application { app }: permissions::Application,
 ) -> Result<Json<ListResponse<EndpointOut>>> {
     let PaginationLimit(limit) = pagination.limit;
-    let iterator = pagination.iterator.clone();
+    let iterator = pagination.iterator;
+    let iter_direction = iterator
+        .as_ref()
+        .map_or(IteratorDirection::Normal, |iter| iter.direction());
 
-    let mut query = endpoint::Entity::secure_find(app.id)
-        .order_by_asc(endpoint::Column::Id)
-        .limit(limit + 1);
+    let query = apply_pagination(
+        endpoint::Entity::secure_find(app.id),
+        endpoint::Column::Id,
+        limit,
+        iterator,
+        pagination.order.unwrap_or(Ordering::Descending),
+    );
 
-    if let Some(iterator) = iterator {
-        query = query.filter(endpoint::Column::Id.gt(iterator))
-    }
+    let results = query
+        .find_also_related(endpointmetadata::Entity)
+        .all(db)
+        .await?
+        .into_iter()
+        .map(|(endp, metadata)| {
+            let metadata = metadata.map(|m| m.data).unwrap_or_default();
+            (endp, metadata).into()
+        })
+        .collect();
 
-    let results = ctx!(
-        query
-            .find_also_related(endpointmetadata::Entity)
-            .all(db)
-            .await
-    )?
-    .into_iter()
-    .map(|(endp, metadata)| {
-        let metadata = metadata.map(|m| m.data).unwrap_or_default();
-        (endp, metadata).into()
-    })
-    .collect();
-
-    Ok(Json(EndpointOut::list_response_no_prev(
+    Ok(Json(EndpointOut::list_response(
         results,
         limit as usize,
+        iter_direction,
     )))
 }
 
@@ -82,10 +84,10 @@ async fn create_endp_from_data(
     data.update_model(&mut endp);
 
     let (endp, metadata) = {
-        let txn = ctx!(db.begin().await)?;
-        let endp = ctx!(endp.insert(&txn).await)?;
-        let metadata = ctx!(metadata.upsert_or_delete(&txn).await)?;
-        ctx!(txn.commit().await)?;
+        let txn = db.begin().await?;
+        let endp = endp.insert(&txn).await.map_err(http_error_on_conflict)?;
+        let metadata = metadata.upsert_or_delete(&txn).await.trace()?;
+        txn.commit().await?;
         (endp, metadata)
     };
 
@@ -99,6 +101,10 @@ async fn create_endp_from_data(
     Ok((endp, metadata))
 }
 
+/// Create a new endpoint for the application.
+///
+/// When `secret` is `null` the secret is automatically generated (recommended)
+#[aide_annotate(op_id = "v1.endpoint.create")]
 pub(super) async fn create_endpoint(
     State(AppState {
         ref db,
@@ -106,31 +112,34 @@ pub(super) async fn create_endpoint(
         op_webhooks,
         ..
     }): State<AppState>,
+    _: Path<ApplicationPath>,
     permissions::Application { app }: permissions::Application,
     ValidatedJson(data): ValidatedJson<EndpointIn>,
-) -> Result<(StatusCode, Json<EndpointOut>)> {
+) -> Result<JsonStatus<201, EndpointOut>> {
     if let Some(ref event_types_ids) = data.event_types_ids {
         validate_event_types(db, event_types_ids, &app.org_id).await?;
     }
     validate_endpoint_url(&data.url, cfg.endpoint_https_only)?;
 
-    let (endp, metadata) = ctx!(create_endp_from_data(db, cfg, &op_webhooks, app, data).await)?;
+    let (endp, metadata) = create_endp_from_data(db, cfg, &op_webhooks, app, data)
+        .await
+        .trace()?;
 
-    Ok((StatusCode::CREATED, Json((endp, metadata.data).into())))
+    Ok(JsonStatus((endp, metadata.data).into()))
 }
 
+/// Get an endpoint.
+#[aide_annotate(op_id = "v1.endpoint.get")]
 pub(super) async fn get_endpoint(
     State(AppState { ref db, .. }): State<AppState>,
-    Path((_app_id, endp_id)): Path<(ApplicationIdOrUid, EndpointIdOrUid)>,
+    Path(ApplicationEndpointPath { endpoint_id, .. }): Path<ApplicationEndpointPath>,
     permissions::Application { app }: permissions::Application,
 ) -> Result<Json<EndpointOut>> {
-    let (endp, metadata) = ctx!(
-        endpoint::Entity::secure_find_by_id_or_uid(app.id, endp_id)
-            .find_also_related(endpointmetadata::Entity)
-            .one(db)
-            .await
-    )?
-    .ok_or_else(|| HttpError::not_found(None, None))?;
+    let (endp, metadata) = endpoint::Entity::secure_find_by_id_or_uid(app.id, endpoint_id)
+        .find_also_related(endpointmetadata::Entity)
+        .one(db)
+        .await?
+        .ok_or_else(|| HttpError::not_found(None, None))?;
 
     let metadata = metadata.map(|m| m.data).unwrap_or_default();
 
@@ -145,10 +154,10 @@ async fn update_endp_from_data(
     metadata: endpointmetadata::ActiveModel,
 ) -> Result<(endpoint::Model, endpointmetadata::Model)> {
     let (endp, metadata) = {
-        let txn = ctx!(db.begin().await)?;
-        let endp = ctx!(endp.update(&txn).await)?;
-        let metadata = ctx!(metadata.upsert_or_delete(&txn).await)?;
-        ctx!(txn.commit().await)?;
+        let txn = db.begin().await?;
+        let endp = endp.update(&txn).await.map_err(http_error_on_conflict)?;
+        let metadata = metadata.upsert_or_delete(&txn).await.trace()?;
+        txn.commit().await?;
         (endp, metadata)
     };
 
@@ -163,6 +172,8 @@ async fn update_endp_from_data(
     Ok((endp, metadata))
 }
 
+/// Update an endpoint.
+#[aide_annotate(op_id = "v1.endpoint.update")]
 pub(super) async fn update_endpoint(
     State(AppState {
         ref db,
@@ -170,30 +181,37 @@ pub(super) async fn update_endpoint(
         ref op_webhooks,
         ..
     }): State<AppState>,
-    Path((_app_id, endp_id)): Path<(ApplicationIdOrUid, EndpointIdOrUid)>,
+    Path(ApplicationEndpointPath { endpoint_id, .. }): Path<ApplicationEndpointPath>,
     permissions::Application { app }: permissions::Application,
-    ValidatedJson(mut data): ValidatedJson<EndpointIn>,
-) -> Result<(StatusCode, Json<EndpointOut>)> {
+    ValidatedJson(mut data): ValidatedJson<EndpointUpdate>,
+) -> Result<JsonStatusUpsert<EndpointOut>> {
     if let Some(ref event_types_ids) = data.event_types_ids {
         validate_event_types(db, event_types_ids, &app.org_id).await?;
     }
     validate_endpoint_url(&data.url, cfg.endpoint_https_only)?;
 
-    let models =
-        ctx!(endpoint::ActiveModel::fetch_with_metadata(db, app.id.clone(), endp_id).await)?;
+    let models = endpoint::ActiveModel::fetch_with_metadata(db, app.id.clone(), endpoint_id)
+        .await
+        .trace()?;
 
     if let Some((mut endp, mut metadata)) = models {
         metadata.data = Set(mem::take(&mut data.metadata));
         data.update_model(&mut endp);
-        let (endp, metadata) =
-            ctx!(update_endp_from_data(db, op_webhooks, app, endp, metadata).await)?;
-        Ok((StatusCode::OK, Json((endp, metadata.data).into())))
+        let (endp, metadata) = update_endp_from_data(db, op_webhooks, app, endp, metadata)
+            .await
+            .trace()?;
+        Ok(JsonStatusUpsert::Updated((endp, metadata.data).into()))
     } else {
-        let (endp, metadata) = ctx!(create_endp_from_data(db, cfg, op_webhooks, app, data).await)?;
-        Ok((StatusCode::CREATED, Json((endp, metadata.data).into())))
+        let data = data.into_in_with_default_key();
+        let (endp, metadata) = create_endp_from_data(db, cfg, op_webhooks, app, data)
+            .await
+            .trace()?;
+        Ok(JsonStatusUpsert::Created((endp, metadata.data).into()))
     }
 }
 
+/// Partially update an endpoint.
+#[aide_annotate]
 pub(super) async fn patch_endpoint(
     State(AppState {
         ref db,
@@ -201,7 +219,7 @@ pub(super) async fn patch_endpoint(
         ref op_webhooks,
         ..
     }): State<AppState>,
-    Path((_app_id, endp_id)): Path<(ApplicationIdOrUid, EndpointIdOrUid)>,
+    Path(ApplicationEndpointPath { endpoint_id, .. }): Path<ApplicationEndpointPath>,
     permissions::Application { app }: permissions::Application,
     ValidatedJson(data): ValidatedJson<EndpointPatch>,
 ) -> Result<Json<EndpointOut>> {
@@ -213,7 +231,8 @@ pub(super) async fn patch_endpoint(
     }
 
     let (mut endp, mut metadata) =
-        ctx!(endpoint::ActiveModel::fetch_with_metadata(db, app.id.clone(), endp_id).await)?
+        endpoint::ActiveModel::fetch_with_metadata(db, app.id.clone(), endpoint_id)
+            .await?
             .ok_or_else(|| HttpError::not_found(None, None))?;
 
     let mut patch_data = data; // need to alias so we can use data for `patch_field_non_nullable!`
@@ -221,26 +240,28 @@ pub(super) async fn patch_endpoint(
     let data = mem::take(&mut patch_data.metadata);
     patch_field_non_nullable!(metadata, data);
     patch_data.update_model(&mut endp);
-    let (endp, metadata) = ctx!(update_endp_from_data(db, op_webhooks, app, endp, metadata).await)?;
+    let (endp, metadata) = update_endp_from_data(db, op_webhooks, app, endp, metadata)
+        .await
+        .trace()?;
 
     Ok(Json((endp, metadata.data).into()))
 }
 
+/// Delete an endpoint.
+#[aide_annotate(op_id = "v1.endpoint.delete")]
 pub(super) async fn delete_endpoint(
     State(AppState {
         ref db,
         ref op_webhooks,
         ..
     }): State<AppState>,
-    Path((_app_id, endp_id)): Path<(ApplicationIdOrUid, EndpointIdOrUid)>,
+    Path(ApplicationEndpointPath { endpoint_id, .. }): Path<ApplicationEndpointPath>,
     permissions::Application { app }: permissions::Application,
-) -> Result<(StatusCode, Json<EmptyResponse>)> {
-    let endp = ctx!(
-        endpoint::Entity::secure_find_by_id_or_uid(app.id.clone(), endp_id)
-            .one(db)
-            .await
-    )?
-    .ok_or_else(|| HttpError::not_found(None, None))?;
+) -> Result<NoContent> {
+    let endp = endpoint::Entity::secure_find_by_id_or_uid(app.id.clone(), endpoint_id)
+        .one(db)
+        .await?
+        .ok_or_else(|| HttpError::not_found(None, None))?;
 
     // Cloning the ID/UID out of endp before it's consumed below
     let endpoint_id = endp.id.clone();
@@ -249,7 +270,7 @@ pub(super) async fn delete_endpoint(
     let mut endp: endpoint::ActiveModel = endp.into();
     endp.deleted = Set(true);
     endp.uid = Set(None); // We don't want deleted UIDs to clash
-    ctx!(endp.update(db).await)?;
+    endp.update(db).await?;
 
     op_webhooks
         .send_operational_webhook(
@@ -263,7 +284,7 @@ pub(super) async fn delete_endpoint(
         )
         .await?;
 
-    Ok((StatusCode::NO_CONTENT, Json(EmptyResponse {})))
+    Ok(NoContent)
 }
 
 /// This module is here so that our Result override doesn't conflict
@@ -283,15 +304,13 @@ async fn validate_event_types(
     event_types_ids: &EventTypeNameSet,
     org_id: &OrganizationId,
 ) -> Result<()> {
-    let event_types: Vec<EventTypeNameResult> = ctx!(
-        eventtype::Entity::secure_find(org_id.clone())
-            .filter(eventtype::Column::Deleted.eq(false))
-            .select_only()
-            .column(eventtype::Column::Name)
-            .into_model::<EventTypeNameResult>()
-            .all(db)
-            .await
-    )?;
+    let event_types: Vec<EventTypeNameResult> = eventtype::Entity::secure_find(org_id.clone())
+        .filter(eventtype::Column::Deleted.eq(false))
+        .select_only()
+        .column(eventtype::Column::Name)
+        .into_model::<EventTypeNameResult>()
+        .all(db)
+        .await?;
     let event_types: HashSet<EventTypeName> =
         HashSet::from_iter(event_types.into_iter().map(|x| x.name));
     let missing: Vec<&EventTypeName> = event_types_ids
@@ -303,9 +322,14 @@ async fn validate_event_types(
     if missing.is_empty() {
         Ok(())
     } else {
+        let missing = missing
+            .into_iter()
+            .map(|x| &(x.0[..]))
+            .collect::<Vec<&str>>()
+            .join(", ");
         Err(HttpError::unprocessable_entity(vec![ValidationErrorItem {
-            loc: vec!["body".to_owned(), "event_types_ids".to_owned()],
-            msg: format!("The following type names don't exist: {missing:?}"),
+            loc: vec!["body".to_owned(), "filterTypes".to_owned()],
+            msg: format!("The following event types don't exist: {missing}"),
             ty: "value_error".to_owned(),
         }])
         .into())

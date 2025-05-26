@@ -1,29 +1,26 @@
 // SPDX-FileCopyrightText: © 2022 Svix Authors
 // SPDX-License-Identifier: MIT
 
-use std::{borrow::Cow, collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{borrow::Cow, collections::HashMap, fmt, net::SocketAddr, sync::Arc, time::Duration};
 
+use anyhow::{bail, Context};
 use figment::{
     providers::{Env, Format, Toml},
     Figment,
 };
-use std::time::Duration;
-
-use crate::{core::cryptography::Encryption, core::security::Keys, error::Result};
+use ipnet::IpNet;
 use serde::{Deserialize, Deserializer};
 use tracing::Level;
+use url::Url;
 use validator::{Validate, ValidationError};
 
-fn deserialize_jwt_secret<'de, D>(deserializer: D) -> std::result::Result<Keys, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let buf = String::deserialize(deserializer)?;
+use crate::{
+    core::{cryptography::Encryption, security::JwtSigningConfig},
+    error::Result,
+    v1::utils::validation_error,
+};
 
-    Ok(Keys::new(buf.as_bytes()))
-}
-
-fn deserialize_main_secret<'de, D>(deserializer: D) -> std::result::Result<Encryption, D::Error>
+fn deserialize_main_secret<'de, D>(deserializer: D) -> Result<Encryption, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -40,9 +37,7 @@ enum RetryScheduleDeserializer {
     Legacy(String),
 }
 
-fn deserialize_retry_schedule<'de, D>(
-    deserializer: D,
-) -> std::result::Result<Vec<Duration>, D::Error>
+fn deserialize_retry_schedule<'de, D>(deserializer: D) -> Result<Vec<Duration>, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -53,7 +48,6 @@ where
         }
         RetryScheduleDeserializer::Legacy(buf) => Ok(buf
             .split(',')
-            .into_iter()
             .filter_map(|x| {
                 let x = x.trim();
                 if x.is_empty() {
@@ -66,7 +60,7 @@ where
     }
 }
 
-fn deserialize_hours<'de, D>(deserializer: D) -> std::result::Result<Duration, D::Error>
+fn deserialize_hours<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
 {
@@ -77,6 +71,40 @@ where
 const DEFAULTS: &str = include_str!("../config.default.toml");
 
 pub type Configuration = Arc<ConfigurationInner>;
+
+fn default_redis_pending_duration_secs() -> u64 {
+    45
+}
+
+fn validate_operational_webhook_url(url: &str) -> Result<(), ValidationError> {
+    match Url::parse(url) {
+        Ok(url) => {
+            // Verify scheme is http or https
+            if url.scheme() != "http" && url.scheme() != "https" {
+                return Err(validation_error(
+                    Some("operational_webhook_address"),
+                    Some("URL scheme must be http or https"),
+                ));
+            }
+
+            // Verify there's a host
+            if url.host().is_none() {
+                return Err(validation_error(
+                    Some("operational_webhook_address"),
+                    Some("URL must include a valid host"),
+                ));
+            }
+        }
+        Err(_) => {
+            return Err(validation_error(
+                Some("operational_webhook_address"),
+                Some("Invalid URL format"),
+            ));
+        }
+    }
+
+    Ok(())
+}
 
 #[derive(Clone, Debug, Deserialize, Validate)]
 #[validate(
@@ -89,6 +117,7 @@ pub struct ConfigurationInner {
 
     /// The address to send operational webhooks to. When None, operational webhooks will not be
     /// sent. When Some, the API server with the given URL will be used to send operational webhooks.
+    #[validate(custom = "validate_operational_webhook_url")]
     pub operational_webhook_address: Option<String>,
 
     /// The main secret used by Svix. Used for client-side encryption of sensitive data, etc.
@@ -100,9 +129,9 @@ pub struct ConfigurationInner {
     )]
     pub encryption: Encryption,
 
-    /// The JWT secret for authentication - should be secret and securely generated
-    #[serde(deserialize_with = "deserialize_jwt_secret")]
-    pub jwt_secret: Keys,
+    /// Contains the secret and algorithm for signing JWTs
+    #[serde(flatten)]
+    pub jwt_signing_config: Arc<JwtSigningConfig>,
 
     /// This determines the type of key that is generated for endpoint secrets by default (when none is set).
     /// Supported: hmac256 (default), ed25519
@@ -118,9 +147,16 @@ pub struct ConfigurationInner {
     /// The ratio at which to sample spans when sending to OpenTelemetry. When not given it defaults
     /// to always sending. If the OpenTelemetry address is not set, this will do nothing.
     pub opentelemetry_sample_ratio: Option<f64>,
+    /// The service name to use for OpenTelemetry. If not provided, it defaults to "svix_server".
+    pub opentelemetry_service_name: String,
     /// Whether to enable the logging of the databases at the configured log level. This may be
     /// useful for analyzing their response times.
     pub db_tracing: bool,
+    /// The Sentry DSN to use for error reporting. If this is `None`,
+    /// then sentry reporting is disabled
+    pub sentry_dsn: Option<sentry::types::Dsn>,
+    /// The environment (dev, staging, or prod) that the server is running in.
+    pub environment: Environment,
 
     /// The wanted retry schedule in seconds. Each value is the time to wait between retries.
     #[serde(deserialize_with = "deserialize_retry_schedule")]
@@ -133,10 +169,15 @@ pub struct ConfigurationInner {
     pub db_pool_max_size: u16,
 
     /// The DSN for redis (can be left empty if not using redis)
+    /// Note that if using Redis Sentinel, this will be the the DSN
+    /// for a Sentinel instance.
     pub redis_dsn: Option<String>,
     /// The maximum number of connections for the Redis pool
     #[validate(range(min = 10))]
     pub redis_pool_max_size: u16,
+
+    #[serde(flatten, default)]
+    pub redis_sentinel_cfg: Option<SentinelConfig>,
 
     /// What kind of message queue to use. Supported: memory, redis (must have redis_dsn or
     /// queue_dsn configured).
@@ -173,13 +214,83 @@ pub struct ConfigurationInner {
     /// Should this instance run the message worker
     pub worker_enabled: bool,
 
+    /// Subnets to whitelist for outbound webhooks. Note that allowing endpoints in private IP space
+    /// is a security risk and should only be allowed if you are using the service internally or for
+    /// testing purposes. Should be specified in CIDR notation, e.g., `[127.0.0.1/32, 172.17.0.0/16, 192.168.0.0/16]`
+    pub whitelist_subnets: Option<Arc<Vec<IpNet>>>,
+
+    /// Maximum number of concurrent worker tasks to spawn (0 is unlimited)
+    pub worker_max_tasks: u16,
+
+    /// Maximum seconds of a queue long-poll
+    pub queue_max_poll_secs: u16,
+
+    /// The address of the rabbitmq exchange
+    pub rabbit_dsn: Option<Arc<String>>,
+    pub rabbit_consumer_prefetch_size: Option<u16>,
+
+    /// Whether or not to completely disable TLS certificate validation on webhook dispatch. This is
+    /// a dangerous flag to set true. This value will default to false.
+    #[serde(default)]
+    pub dangerous_disable_tls_verification: bool,
+
+    /// Optional configuration for sending webhooks through a proxy.
+    #[serde(flatten)]
+    pub proxy_config: Option<ProxyConfig>,
+
+    #[serde(default = "default_redis_pending_duration_secs")]
+    pub redis_pending_duration_secs: u64,
+
     #[serde(flatten)]
     pub internal: InternalConfig,
 }
 
-fn validate_config_complete(
-    config: &ConfigurationInner,
-) -> std::result::Result<(), ValidationError> {
+#[derive(Clone, Debug, Deserialize)]
+pub struct ProxyConfig {
+    /// Proxy address.
+    ///
+    /// Currently supported proxy types are:
+    /// - `socks5://`, i.e. a SOCKS5 proxy, with domain name resolution being
+    ///   done before the proxy gets involved
+    /// - `http://` or `https://` proxy, sending HTTP requests to the proxy;
+    ///   both HTTP and HTTPS targets are supported
+    #[serde(rename = "proxy_addr")]
+    pub addr: ProxyAddr,
+}
+
+#[derive(Clone, Debug)]
+pub enum ProxyAddr {
+    /// A SOCKS5 proxy.
+    Socks5(http::Uri),
+    /// An HTTP / HTTPs proxy.
+    Http(http::Uri),
+}
+
+impl ProxyAddr {
+    pub fn new(raw: impl Into<String>) -> Result<Self, Box<dyn std::error::Error>> {
+        let raw = raw.into();
+        let parsed: http::Uri = raw.parse()?;
+        match parsed.scheme_str().unwrap_or("") {
+            "socks5" => Ok(Self::Socks5(parsed)),
+            "http" | "https" => Ok(Self::Http(parsed)),
+            _ => Err("Unsupported proxy scheme. \
+                Supported schemes are `socks5://`, `http://` and `https://`."
+                .into()),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProxyAddr {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        Self::new(raw).map_err(serde::de::Error::custom)
+    }
+}
+
+fn validate_config_complete(config: &ConfigurationInner) -> Result<(), ValidationError> {
     match config.cache_type {
         CacheType::None | CacheType::Memory => {}
         CacheType::Redis | CacheType::RedisCluster => {
@@ -188,6 +299,27 @@ fn validate_config_complete(
                     code: Cow::from("missing field"),
                     message: Some(Cow::from(
                         "The redis_dsn or cache_dsn field must be set if the cache_type is `redis` or `rediscluster`"
+                    )),
+                    params: HashMap::new(),
+                });
+            }
+        }
+        CacheType::RedisSentinel => {
+            if config.cache_dsn().is_none() {
+                return Err(ValidationError {
+                    code: Cow::from("missing field"),
+                    message: Some(Cow::from(
+                        "The redis_dsn or cache_dsn field must be set if the cache_type is `redissentinel`"
+                    )),
+                    params: HashMap::new(),
+                });
+            }
+
+            if config.redis_sentinel_cfg.is_none() {
+                return Err(ValidationError {
+                    code: Cow::from("missing field"),
+                    message: Some(Cow::from(
+                        "sentinel_service_name must be set if the cache_type is `redissentinel`",
                     )),
                     params: HashMap::new(),
                 });
@@ -203,6 +335,38 @@ fn validate_config_complete(
                     code: Cow::from("missing field"),
                     message: Some(Cow::from(
                         "The redis_dsn or queue_dsn field must be set if the queue_type is `redis` or `rediscluster`"
+                    )),
+                    params: HashMap::new(),
+                });
+            }
+        }
+        QueueType::RabbitMQ => {
+            if config.rabbit_dsn.is_none() {
+                return Err(ValidationError {
+                    code: Cow::from("missing field"),
+                    message: Some(Cow::from(
+                        "The rabbit_dsn field must be set if the queue_type is `rabbitmq`",
+                    )),
+                    params: HashMap::new(),
+                });
+            }
+        }
+        QueueType::RedisSentinel => {
+            if config.queue_dsn().is_none() {
+                return Err(ValidationError {
+                    code: Cow::from("missing field"),
+                    message: Some(Cow::from(
+                        "The redis_dsn or queue_dsn field must be set if the queue_type is `redissentinel`"
+                    )),
+                    params: HashMap::new(),
+                });
+            }
+
+            if config.redis_sentinel_cfg.is_none() {
+                return Err(ValidationError {
+                    code: Cow::from("missing field"),
+                    message: Some(Cow::from(
+                        "sentinel_service_name must be set if the queue_type is `redissentinel`",
                     )),
                     params: HashMap::new(),
                 });
@@ -231,6 +395,11 @@ impl ConfigurationInner {
             QueueType::Memory => QueueBackend::Memory,
             QueueType::Redis => QueueBackend::Redis(self.queue_dsn().expect(err)),
             QueueType::RedisCluster => QueueBackend::RedisCluster(self.queue_dsn().expect(err)),
+            QueueType::RedisSentinel => QueueBackend::RedisSentinel(
+                self.queue_dsn().expect(err),
+                self.redis_sentinel_cfg.as_ref().expect(err),
+            ),
+            QueueType::RabbitMQ => QueueBackend::RabbitMq(self.rabbit_dsn.as_ref().expect(err)),
         }
     }
 
@@ -244,6 +413,10 @@ impl ConfigurationInner {
             CacheType::Memory => CacheBackend::Memory,
             CacheType::Redis => CacheBackend::Redis(self.cache_dsn().expect(err)),
             CacheType::RedisCluster => CacheBackend::RedisCluster(self.cache_dsn().expect(err)),
+            CacheType::RedisSentinel => CacheBackend::RedisSentinel(
+                self.cache_dsn().expect(err),
+                self.redis_sentinel_cfg.as_ref().expect(err),
+            ),
         }
     }
 }
@@ -272,6 +445,8 @@ pub enum QueueBackend<'a> {
     Memory,
     Redis(&'a str),
     RedisCluster(&'a str),
+    RedisSentinel(&'a str, &'a SentinelConfig),
+    RabbitMq(&'a str),
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -280,6 +455,7 @@ pub enum CacheBackend<'a> {
     Memory,
     Redis(&'a str),
     RedisCluster(&'a str),
+    RedisSentinel(&'a str, &'a SentinelConfig),
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -303,6 +479,8 @@ pub enum QueueType {
     Memory,
     Redis,
     RedisCluster,
+    RedisSentinel,
+    RabbitMQ,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -311,6 +489,7 @@ pub enum CacheType {
     Memory,
     Redis,
     RedisCluster,
+    RedisSentinel,
     None,
 }
 
@@ -321,17 +500,87 @@ pub enum DefaultSignatureType {
     Ed25519,
 }
 
-impl ToString for LogLevel {
-    fn to_string(&self) -> String {
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Environment {
+    Dev,
+    Staging,
+    Prod,
+}
+
+impl std::fmt::Display for Environment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}",
+            match self {
+                Environment::Dev => "dev",
+                Environment::Staging => "staging",
+                Environment::Prod => "prod",
+            }
+        )
+    }
+}
+
+impl fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Info => Level::INFO,
             Self::Debug => Level::DEBUG,
             Self::Trace => Level::TRACE,
         }
-        .to_string()
+        .fmt(f)
     }
 }
-pub fn load() -> Result<Arc<ConfigurationInner>> {
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct SentinelConfig {
+    #[serde(rename = "sentinel_service_name")]
+    pub service_name: String,
+    #[serde(default)]
+    pub redis_tls_mode_secure: bool,
+    pub redis_db: Option<i64>,
+    pub redis_username: Option<String>,
+    pub redis_password: Option<String>,
+    #[serde(default)]
+    pub redis_use_resp3: bool,
+}
+
+impl From<SentinelConfig> for omniqueue::backends::redis::SentinelConfig {
+    fn from(val: SentinelConfig) -> Self {
+        let SentinelConfig {
+            service_name,
+            redis_tls_mode_secure,
+            redis_db,
+            redis_username,
+            redis_password,
+            redis_use_resp3,
+        } = val;
+        omniqueue::backends::redis::SentinelConfig {
+            service_name,
+            redis_tls_mode_secure,
+            redis_db,
+            redis_username,
+            redis_password,
+            redis_use_resp3,
+        }
+    }
+}
+
+/// Try to extract a [`ConfigurationInner`] from the provided [`Figment`]. Any error message should
+/// indicate the missing required field(s).
+fn try_extract(figment: Figment) -> anyhow::Result<ConfigurationInner> {
+    // Explicitly override error if `jwt_secret` is not set, as the default error does not mention
+    // the field name due it coming from an inlined field `ConfigurationInner::jwt_signing_config`
+    // See: <https://github.com/SergioBenitez/Figment/issues/80>
+    if !figment.contains("jwt_secret") {
+        bail!("missing field `jwt_secret`");
+    }
+
+    Ok(figment.extract()?)
+}
+
+pub fn load() -> anyhow::Result<Arc<ConfigurationInner>> {
     if let Ok(db_url) = std::env::var("DATABASE_URL") {
         // If we have DATABASE_URL set, we should potentially use it.
         const DB_DSN: &str = "SVIX_DB_DSN";
@@ -340,87 +589,87 @@ pub fn load() -> Result<Arc<ConfigurationInner>> {
         }
     }
 
-    let config: ConfigurationInner = Figment::new()
+    let merged = Figment::new()
         .merge(Toml::string(DEFAULTS))
         .merge(Toml::file("config.toml"))
-        .merge(Env::prefixed("SVIX_"))
-        .extract()
-        .expect("Error loading configuration");
+        .merge(Env::prefixed("SVIX_"));
 
-    config.validate().expect("Error validating configuration");
+    let config = try_extract(merged).context("failed to extract configuration")?;
+
+    config
+        .validate()
+        .context("failed to validate configuration")?;
     Ok(Arc::from(config))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::Arc;
 
-    #[test]
-    fn test_retry_schedule_parsing() {
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("SVIX_JWT_SECRET", "x");
+    use figment::{
+        providers::{Format as _, Toml},
+        Figment,
+    };
 
-            // Multi item
-            jail.set_env("SVIX_RETRY_SCHEDULE", "[1,2]");
-
-            let cfg = load().unwrap();
-            assert_eq!(
-                cfg.retry_schedule,
-                vec![Duration::new(1, 0), Duration::new(2, 0)]
-            );
-
-            // Single item
-            jail.set_env("SVIX_RETRY_SCHEDULE", "[1]");
-
-            let cfg = load().unwrap();
-            assert_eq!(cfg.retry_schedule, vec![Duration::new(1, 0)]);
-
-            // Empty
-            jail.set_env("SVIX_RETRY_SCHEDULE", "[]");
-
-            let cfg = load().unwrap();
-            assert!(cfg.retry_schedule.is_empty());
-
-            Ok(())
-        });
-    }
-
-    #[test]
-    fn test_retry_schedule_parsing_legacy() {
-        figment::Jail::expect_with(|jail| {
-            jail.set_env("SVIX_JWT_SECRET", "x");
-
-            // Multi item
-            jail.set_env("SVIX_RETRY_SCHEDULE", "1,2");
-
-            let cfg = load().unwrap();
-            assert_eq!(
-                cfg.retry_schedule,
-                vec![Duration::new(1, 0), Duration::new(2, 0)]
-            );
-
-            // Single item and empty were failing before so not testing them
-
-            Ok(())
-        });
-    }
+    use super::{load, try_extract, CacheBackend, CacheType, QueueBackend, QueueType};
+    use crate::core::security::{JWTAlgorithm, JwtSigningConfig};
 
     #[test]
     fn test_cache_or_queue_dsn_priority() {
-        // NOTE: Does not use `figment::Jail` like the above because set env vars will leak into
-        // other tests overwriting real configurations
         let mut cfg = load().unwrap();
-        let mut cfg = Arc::make_mut(&mut cfg);
+        let cfg = Arc::make_mut(&mut cfg);
 
         // Override all relevant values
         cfg.queue_type = QueueType::Redis;
         cfg.cache_type = CacheType::Redis;
         cfg.queue_dsn = Some("test_a".to_owned());
         cfg.cache_dsn = Some("test_b".to_owned());
-        cfg.redis_dsn = Some("this_value_shoud_be_overriden".to_owned());
+        cfg.redis_dsn = Some("this_value_should_be_overridden".to_owned());
 
         // Assert that the queue_dsn and cache_dsn overwrite the `redis_dsn`
         assert_eq!(cfg.queue_backend(), QueueBackend::Redis("test_a"));
         assert_eq!(cfg.cache_backend(), CacheBackend::Redis("test_b"));
+    }
+
+    #[test]
+    fn test_try_extract_missing_jwt_secret() {
+        let defaults = Figment::new();
+
+        let actual = try_extract(defaults);
+
+        let err = actual.unwrap_err();
+        assert_eq!(err.to_string(), "missing field `jwt_secret`");
+    }
+
+    #[test]
+    fn test_jwt_signing_fallback() {
+        let raw_config = r#"
+jwt_secret = "not_actually_a_secret"
+        "#;
+
+        let actual: JwtSigningConfig = Figment::new()
+            .merge(Toml::string(raw_config))
+            .extract()
+            .unwrap();
+
+        assert!(matches!(actual, JwtSigningConfig::Default { .. }));
+    }
+
+    #[test]
+    fn test_jwt_select_algorithm() {
+        let raw_config = r#"
+jwt_secret = "not_actually_a_secret"
+jwt_algorithm = "HS512"
+        "#;
+
+        let actual: JwtSigningConfig = Figment::new()
+            .merge(Toml::string(raw_config))
+            .extract()
+            .unwrap();
+
+        assert!(matches!(
+            actual,
+            JwtSigningConfig::Advanced(JWTAlgorithm::HS512(_))
+        ));
     }
 }

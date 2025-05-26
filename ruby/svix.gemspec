@@ -10,10 +10,16 @@ Gem::Specification.new do |spec|
   spec.email         = ["support@svix.com"]
   spec.license       = "MIT"
 
-  spec.summary       = "Ruby bindings for the Svix API"
+  spec.summary       = "Svix webhooks API client and webhook verification library"
   spec.description   = "Svix makes webhooks easy and reliable.  " \
                        "Learn more at https://www.svix.com"
   spec.homepage      = "https://www.svix.com"
+
+  spec.post_install_message = <<~MESSAGE
+
+    Thank you for installing svix!
+
+  MESSAGE
 
   # Prevent pushing this gem to RubyGems.org. To allow pushes either set the 'allowed_push_host'
   # to allow pushing to a single host or delete this section to allow pushing to any host.
@@ -30,13 +36,9 @@ Gem::Specification.new do |spec|
 
   # Specify which files should be added to the gem when it is released.
   ignored = Regexp.union(
-    /\A\.openapi-generator/,
     /\Aspec/,
     /\Apkg/,
-    /\Atemplates/,
     /\A.gitignore/,
-    /\A.openapi-generator-ignore/,
-    /\Aopenapi-generator-config.json/,
     /.gem\z/
   )
   spec.files = Dir['**/*'].reject {|f| !File.file?(f) || ignored.match(f) }
@@ -45,9 +47,7 @@ Gem::Specification.new do |spec|
   spec.executables   = spec.files.grep(%r{^exe/}) { |f| File.basename(f) }
   spec.require_paths = ["lib"]
 
-  spec.add_runtime_dependency 'typhoeus', '~> 1.0', '>= 1.0.1'
-
-  spec.add_development_dependency "bundler", ">= 2.2.10"
   spec.add_development_dependency "rake", "~> 13.0"
   spec.add_development_dependency "rspec", "~> 3.2"
+  spec.add_development_dependency 'webmock', '~> 3.25'
 end
